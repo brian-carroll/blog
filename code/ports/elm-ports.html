@@ -1,0 +1,134 @@
+<!doctype html>
+
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Elm ports mockup</title>
+</head>
+
+<body>
+
+  <div style="width: 500px; margin: auto">
+    <h1>A simplified demo of Elm ports in WebAssembly</h1>
+    <p>
+      This demo shows how the ports API could work in a future where Elm compiles to WebAssembly. Output is visible in the console.
+    </p>
+    <p>
+      A more fully fleshed-out version, closely matching the current Elm ports API, is available
+      <a href="./full-api.html">here</a>. However the code is not quite as easy to read. I suggest starting with this version first.
+    </p>
+    <br>
+
+    <h2>How it works</h2>
+
+    <h3>Incoming Port</h3>
+    <ul>
+      <li> JavaScript serializes the object to a string.
+      </li>
+      <li> JavaScript calls Wasm memory allocator* with number of JSON bytes
+      </li>
+      <li> Wasm allocates space &amp; returns memory offset.
+      </li>
+      <li> JS writes to the shared memory
+        <code>ArrayBuffer</code> at that offset
+      </li>
+      <li> JS calls one of the Wasm module's exported functions, exposed to JavaScript as a function with the same name as the
+        Elm port.
+      </li>
+      <li> Wasm port decodes JSON to a
+        <code>Msg</code>
+      </li>
+      <li> Pass
+        <code>Msg</code> to Elm program's
+        <code>update</code> function
+      </li>
+    </ul>
+    <i>
+      <b>* Note:</b>
+      When I mention memory allocation here, I'm assuming that for WebAssembly MVP we would need a memory manager / garbage collector
+      implemented in WebAssembly. I'm planning to build a simple one. Later, this could be handled for us by the browser.
+    </i>
+
+    <h3>Outgoing Port</h3>
+    <ul>
+      <li> WebAssembly creates a JSON string in memory
+      </li>
+      <li> WebAssembly calls an imported JavaScript function with the location and size of the JSON string
+      </li>
+      <li> JavaScript (synchronously) fetches the bytes from WebAssembly memory and decodes them as a String
+      </li>
+      <li> JavaScript parses the JSON string to get an object
+      </li>
+    </ul>
+  </div>
+
+  <script>
+    const memory = new WebAssembly.Memory({ initial: 1 });
+
+    function receiveFromPort(byteOffset, nBytes) {
+      const codeUnits = new Uint16Array(memory.buffer, byteOffset, nBytes / 2);
+      const json = new TextDecoder('utf-16le').decode(codeUnits);
+      return JSON.parse(json);
+    }
+
+    function logOutgoingPort(byteOffset, nBytes) {
+      const receivedObj = receiveFromPort(byteOffset, nBytes);
+      console.log(receivedObj);
+    }
+
+    const importObject = {
+      console: {
+        log: logOutgoingPort
+      },
+      js: {
+        mem: memory
+      }
+    };
+
+    WebAssembly.instantiateStreaming(fetch('elm-ports.wasm'), importObject)
+      .then(wasm => {
+        const message = { x: "😂" };
+
+        console.log('Memory before sending:');
+        logMemory(memory);
+
+        console.log('\nWasm received message:')
+        sendToPort(wasm.instance, 'incomingPort', message)
+
+        console.log('\nMemory after sending:')
+        logMemory(memory);
+      });
+
+
+    function sendToPort(wasmInstance, portName, obj) {
+      const json = JSON.stringify(obj);
+      const jsonCodeUnits = json.length;
+      const jsonBytes = jsonCodeUnits * 2;
+
+      const byteOffset = wasmInstance.exports.allocate(jsonBytes);
+      const memView16 = new Uint16Array(
+        memory.buffer,
+        byteOffset,
+        jsonCodeUnits
+      );
+      for (let i = 0; i < jsonCodeUnits; i++) {
+        memView16[i] = json.charCodeAt(i);
+      }
+      wasmInstance.exports[portName](byteOffset, jsonBytes);
+    }
+
+    // Just log the memory we're actually using, not 64kB of mostly zeros
+    const expectedMemoryString = 'Before{"x":"😂"}After';
+    const logLength = expectedMemoryString.length;
+
+    function logMemory(memory) {
+      const codeUnits = new Uint16Array(memory.buffer, 0, logLength);
+      const string = new TextDecoder('utf-16le').decode(codeUnits);
+      console.log(string);
+    }
+
+  </script>
+</body>
+
+</html>

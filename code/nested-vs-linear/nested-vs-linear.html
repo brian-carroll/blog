@@ -1,0 +1,51 @@
+<!doctype html>
+
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Test arguments order</title>
+</head>
+
+<body>
+
+  <script>
+    const memory = new WebAssembly.Memory({ initial: 1 });
+
+    const importObject = {
+      js: {
+        mem: memory
+      }
+    };
+
+    WebAssembly
+      .instantiateStreaming(fetch('nested-vs-linear.wasm'), importObject)
+      .then(wasm => {
+        console.log('Memory before:');
+        logMemory(memory);
+
+        wasm.instance.exports.copy_nested(0, 4)
+
+        console.log('\nMemory after copy_nested(0, 4)')
+        logMemory(memory);
+
+        wasm.instance.exports.copy_linear(12, 16)
+
+        console.log('\nMemory after copy_linear(12, 16)')
+        logMemory(memory);
+      });
+
+    // Just log the memory we're actually using, not 64kB of mostly zeros
+    const expectedMemoryString = 'aaaa--------bbbb--------';
+    const logLength = expectedMemoryString.length;
+
+    function logMemory(memory) {
+      const bytes = new Uint8Array(memory.buffer, 0, logLength);
+      const string = new TextDecoder('utf-8').decode(bytes);
+      console.log(string);
+    }
+
+  </script>
+</body>
+
+</html>
