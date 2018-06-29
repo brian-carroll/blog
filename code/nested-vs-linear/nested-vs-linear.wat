@@ -9,7 +9,7 @@
       (i32.load offset=0   ;; load an i32 from memory. Takes 1 arg, the address
         (get_local $from)))) ;; get value of '$from' (address to copy from)
 
-  ;; sequential version - assembles to the same binary code
+  ;; sequential version
   ;; comments show stack like an Elm list (top value to the left)
   (export "copy_seq" (func $copy_seq)) ;; declare the export
   (func $copy_seq (param $from i32) (param $to i32)
@@ -20,7 +20,7 @@
     (i32.load offset=0)      ;; [data, $to]   pop $from, push data
     (i32.store offset=0))    ;; []            pop 2 values, storing data at $to
 
-  ;; de-sugared version
+  ;; fully de-sugared version
   ;; all labels turned into indices
   (export "copy_sugarfree" (func 2))
   (func (param i32) (param i32)

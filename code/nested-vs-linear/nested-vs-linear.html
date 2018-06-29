@@ -11,6 +11,7 @@
 
   <script>
     const memory = new WebAssembly.Memory({ initial: 1 });
+    const buf = new Uint8Array(memory.buffer);
 
     const importObject = {
       js: {
@@ -22,27 +23,28 @@
       .instantiateStreaming(fetch('nested-vs-linear.wasm'), importObject)
       .then(wasm => {
         console.log('Memory before:');
-        logMemory(memory);
+        logMemory();
 
         wasm.instance.exports.copy_nested(0, 4)
         console.log('\nMemory after copy_nested(0, 4)')
-        logMemory(memory);
+        logMemory();
 
         wasm.instance.exports.copy_seq(8, 12)
         console.log('\nMemory after copy_seq(12, 16)')
-        logMemory(memory);
+        logMemory();
 
         wasm.instance.exports.copy_sugarfree(16, 20)
         console.log('\nMemory after copy_sugarfree(16, 20)')
-        logMemory(memory);
+        logMemory();
       });
 
-    // Just log the memory we're actually using, not 64kB of mostly zeros
-    const expectedMemoryString = 'aaaa----bbbb----cccc----';
-    const logLength = expectedMemoryString.length;
+    function logMemory() {
+      // Get the non-zero bytes at the start of the memory
+      let logLength = 0;
+      while (buf[logLength]) logLength++;
+      const bytes = buf.slice(0, logLength);
 
-    function logMemory(memory) {
-      const bytes = new Uint8Array(memory.buffer, 0, logLength);
+      // convert to string and log to console
       const string = new TextDecoder('utf-8').decode(bytes);
       console.log(string);
     }
