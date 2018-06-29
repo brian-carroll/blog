@@ -19,9 +19,16 @@
       }
     };
 
+    let logLength = 0;
+
     WebAssembly
       .instantiateStreaming(fetch('nested-vs-linear.wasm'), importObject)
       .then(wasm => {
+        // Find number of non-zero bytes at the start of the memory
+        while (buf[logLength] > 0) {
+          logLength++;
+        }
+
         console.log('Memory before:');
         logMemory();
 
@@ -39,12 +46,7 @@
       });
 
     function logMemory() {
-      // Get the non-zero bytes at the start of the memory
-      let logLength = 0;
-      while (buf[logLength]) logLength++;
       const bytes = buf.slice(0, logLength);
-
-      // convert to string and log to console
       const string = new TextDecoder('utf-8').decode(bytes);
       console.log(string);
     }
