@@ -3,18 +3,21 @@ module ElmFunctionsDemo exposing (..)
 
 closureMaker : Int -> (Int -> Int -> Int)
 closureMaker closedOver =
-    \arg1 arg2 ->
-        closedOver + arg1 + arg2
+    let
+        closure arg1 arg2 =
+            closedOver + arg1 + arg2
+    in
+        closure
 
 
-closure : Int -> Int -> Int
-closure =
+myClosure : Int -> Int -> Int
+myClosure =
     closureMaker 1
 
 
 curried : Int -> Int
 curried =
-    closure 2
+    myClosure 2
 
 
 higherOrder : (Int -> Int) -> Int -> Int
