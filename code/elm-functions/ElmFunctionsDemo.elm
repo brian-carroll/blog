@@ -10,6 +10,22 @@ closureMaker closedOver =
         closure
 
 
+{-| function *definition* is effectively lifted to top level
+-}
+closureGenerated closedOver arg1 arg2 =
+    closedOver + arg1 + arg2
+
+
+closureMakerEquivalent : Int -> (Int -> Int -> Int)
+closureMakerEquivalent closedOver =
+    let
+        -- Code generator detects closed-over values and applies them here
+        closure =
+            closureGenerated closedOver
+    in
+        closure
+
+
 myClosure : Int -> Int -> Int
 myClosure =
     closureMaker 1
