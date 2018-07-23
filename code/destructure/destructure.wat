@@ -11,28 +11,19 @@
         (get_local 0)
         (get_local 1))))
 
-  (func (export "destruct_and_add") (param $num_args i32) (local $tmp i32)
-    (set_local $tmp
-      (get_local $num_args))
-
+  (func (export "destruct_and_add") (param $num_args i32)
     (block
       (block
-        (i32.const 1)
-
-        ;; if (!(--tmp)) break;
-        (br_if 0
-          (tee_local $tmp
-            (i32.sub (get_local $tmp) (i32.const 1))))
-        (call $f1))
-
-      (i32.const 1)
-      (i32.const 2)
-      (br_if 0
-        (tee_local $tmp
-          (i32.sub (get_local $tmp) (i32.const 1))))
-      (call $f2))))
-
-;; each block starts with a fresh stack
-;; can't access outer level stack
-;; Therefore can't make code smaller by gradually building up a stack
-;; for different arity functions
+        (block
+          (block
+            (br_table 0 1 2 3
+              (get_local 0)))
+          (unreachable))
+        (return
+          (call $f1
+            (i32.const 1))))
+      (return
+        (call $f2
+          (i32.const 1)
+          (i32.const 1))))
+    (unreachable)))

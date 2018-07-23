@@ -20,8 +20,13 @@
     WebAssembly
       .instantiateStreaming(fetch('destructure.wasm'), importObject)
       .then(wasm => {
-        wasm.instance.exports.destruct_and_add(1);
-        wasm.instance.exports.destruct_and_add(2);
+        for (let i = 0; i <= 3; i++) {
+          try {
+            wasm.instance.exports.destruct_and_add(i);
+          } catch (e) {
+            console.error(e);
+          }
+        }
       });
 
   </script>
