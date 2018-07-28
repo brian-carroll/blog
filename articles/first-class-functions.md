@@ -153,27 +153,17 @@ One way of representing a closure in binary is the following, where each box rep
 
 # Function application
 
-We’ve already mentioned some of the things that need to happen when a closure is applied to some arguments, but let’s look at it in more detail.
+We’ve already mentioned some of the things that need to happen when a closure is applied to some arguments, but here's the algorithm in full:
 
-Let's look at the algorithm. (I've used JavaScript-like pseudo-code below, even though it would be done in WebAssembly.)
-
-```js
-// JavaScript-like pseudo-code! Would actually be done in Wasm!
-function apply(original_closure, args) {
-  var closure = copy(original_closure);
-
-  for (argument in args) {
-    closure.mem_ptr[closure.arity - 1] = argument;
-    closure.arity--;
-  }
-
-  if (closure.arity > 0) {
-    return closure;
-  } else {
-    return call_indirect(closure.func_index, closure);
-  }
-}
-```
+- Make a new copy of the closure
+- For each applied argument
+  - Let `a` be the remaining arity of the closure
+  - Write the address of the argument into `mem_ptr` at position `a-1`
+  - Decrement the arity `a`
+- If remaining arity is greater than 0
+  - return the new closure
+- else
+  - Use `call_indirect` to execute the function referenced by `func_index`, passing the closure as its argument
 
 Let’s go through this from the top.
 
@@ -188,6 +178,30 @@ Finally, we check the remaining arity after applying all the arguments in this c
 Note that we are passing the closure data structure _into_ the evaluator function as its only argument. The closure structure contains all of the data we need to evaluate the body of our Elm function, because that’s exactly what it was designed for. So it’s the only argument the evaluator function needs.
 
 Inside the evaluator function, we’ll need to do some destructuring to get the individual arguments out of the closure structure. The compiler will have to generate the appropriate code for that.
+
+### Example
+
+Let's work through an example, applying two arguments to a closure of arity 2.
+
+Here's what the data structure looks like before we apply any arguments. All of the pointers are set to zero (the `null` pointer).
+
+| `fn_index` | `arity` | `mem_ptr0` | `mem_ptr1` |
+| ---------- | ------- | ---------- | ---------- |
+| `123`      | `2`     | `null`     | `null`     |
+
+Now let's apply an argument, which we'll call `arg0`. We're filling the pointers in reverse, so it goes into `mem_ptr1`. And the arity goes down from 2 to 1.
+
+| `fn_index` | `arity` | `mem_ptr0` | `mem_ptr1` |
+| ---------- | ------- | ---------- | ---------- |
+| `123`      | `1`     | `null`     | `arg0`     |
+
+Applying a second argument, which we'll call `arg1`, works the same way. We put the address of `arg1` into `mem_ptr0`, and reduce the arity again.
+
+| `fn_index` | `arity` | `mem_ptr0` | `mem_ptr1` |
+| ---------- | ------- | ---------- | ---------- |
+| `123`      | `0`     | `arg1`     | `arg0`     |
+
+At this point, we have all of the arguments and we're ready to execute `call_indirect`.
 
 &nbsp;
 
