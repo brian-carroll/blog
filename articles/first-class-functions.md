@@ -155,28 +155,33 @@ One way of representing a closure in binary is the following, where each box rep
 
 We’ve already mentioned some of the things that need to happen when a closure is applied to some arguments, but let’s look at it in more detail.
 
-Here’s some pseudo-code to describe the algorithm for function application.
+Let's look at the algorithm. (I've used JavaScript-like pseudo-code below, even though it would be done in WebAssembly.)
 
-```
-closure = copy(original_closure)
+```js
+// JavaScript-like pseudo-code! Would actually be done in Wasm!
+function apply(original_closure, args) {
+  var closure = copy(original_closure);
 
-for each applied argument
-    closure.mem_ptr[closure.arity - 1] = argument address
-    closure.arity--
+  for (argument in args) {
+    closure.mem_ptr[closure.arity - 1] = argument;
+    closure.arity--;
+  }
 
-if closure.arity > 0 then
-    return closure
-else
-    return call_indirect(closure.func_index, closure)
+  if (closure.arity > 0) {
+    return closure;
+  } else {
+    return call_indirect(closure.func_index, closure);
+  }
+}
 ```
 
 Let’s go through this from the top.
 
-Before applying the closure, we need to create a new copy of it so, that the old closure is still available for other code to use. All Elm values are immutable, and this is no exception.
+Before applying the closure, we need to create a new copy of it, so that the old closure is still available for other code to use. All Elm values are immutable, and the closure is no exception.
 
-Next, we insert the applied arguments into the closure. The closure structure has one pointer "slot" for each argument. We need to make sure we put each argument in the right slot, and there’s a neat little trick we can use here to make this easy. Since the arity has to go down by 1 every time we apply an argument, we can actually use it to tell us which slot is next. All we have to do is fill them in reverse!
+Next, we insert the applied arguments into the closure. The closure structure has one pointer "slot" for each argument. We need to make sure we put each argument in the right slot, and there’s a neat little trick we can use here to make this easy. Since the arity has to go down by 1 every time we apply an argument, we can use it to tell us which slot is next. All we have to do is fill them in reverse!
 
-For example if the arity is 2, we’ll insert an argument into the closure at `mem_ptr1`, and if the arity is 1, we’ll insert the argument into the closure at `mem_ptr0`.
+For example if the remaining arity is 2, we’ll insert an argument into the closure at `mem_ptr1`, and if the arity is 1, we’ll insert the argument into the closure at `mem_ptr0`. We don't actually need to know the total arity of the original function, which is nice.
 
 Finally, we check the remaining arity after applying all the arguments in this call. If the remaining arity is non-zero, this must be a partial application, and we just return the closure. If it’s zero, that means all arguments have been applied. We need to call the evaluator function, and return the value it gives us.
 
