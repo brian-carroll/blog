@@ -31,7 +31,7 @@ Before we get started, I just want to note that from what I’ve heard from the 
 
 But... it will get past MVP at some point, and this stuff is kind of fascinating, so let’s have a think about what it could look like!
 
-So… how do you go about implementing first-class functions in a low-level language like WebAssembly? It’s a pretty high-level language feature, and WebAssembly is all just low-level machine instructions. Machine instructions aren’t something you can “pass around”! And what about partial function application? And isn’t there something about “closing over” values from outside the function scope?
+So... how do you go about implementing first-class functions in a low-level language like WebAssembly? WebAssembly is all just low-level machine instructions, and machine instructions aren’t something you can "pass around"! And what about partial function application? And isn’t there something about "closing over" values from outside the function scope?
 
 Let’s break this down.
 
@@ -39,7 +39,7 @@ Let’s break this down.
 
 # Elm’s first-class functions
 
-I think the best way to start is to look at some example Elm code and list the features of Elm functions that we’ll need to implement.
+Let's start by looking at some example Elm code, then list all the features of Elm functions that we’ll need to implement.
 
 ```elm
 module ElmFunctionsDemo exposing (..)
@@ -89,17 +89,21 @@ This is definitely not the simplest way to write this calculation! But it does i
 
 Firstly, Elm functions are first-class, meaning they are _values_ that can be returned from other functions (like `outerFunc`) and passed into other functions (like `higherOrder`).
 
-Secondly, they support _lexical closure_. `innerFunc` “captures” the value of `closedOver`, which is defined outside of its body. `myClosure` “remembers” the value of `closedOver` that it was created with, which in this case is `1`.
+Secondly, they support _lexical closure_. `innerFunc` "captures" the value of `closedOver`, which is defined outside of its body. `myClosure` "remembers" the value of `closedOver` that it was created with, which in this case is `1`.
 
-Finally, Elm functions support _partial application_. `myClosure` is a function that takes two arguments, but on line 17 we only apply one argument to it. As a result, we get a new function that is waiting for one more argument before it can actually run. This new function “remembers” the value that was partially applied, as well as the closed-over value.
+Finally, Elm functions support _partial application_. `myClosure` is a function that takes two arguments, but on line 17 we only apply one argument to it. As a result, we get a new function that is waiting for one more argument before it can actually run. This new function "remembers" the value that was partially applied, as well as the closed-over value.
 
 ## Clues in the code
 
-Note that we now have several Elm functions that will all will end up executing the _same line of code_ when they actually get executed! That’s line 7. If somebody calls `curried` with one more argument, line 7 will do the work. Likewise, if somebody calls `myClosure` with two arguments, line 7 will do the work then too.
+Note that we now have several Elm functions that will all will end up executing the _same line of code_ when they actually get executed! That's this expression:
 
-This gives us a clue to one of the things we’ll need to implement first-class functions in a language that doesn’t support them directly. We’ll need a WebAssembly function that implements the body expression on line 7. And somehow, all of the function values we’re passing around will need to have a _reference_ to that WebAssembly function, so that they can eventually use it for execution.
+`closedOver + arg1 + arg2`
 
-In WebAssembly, we can’t pass functions around, only data. But maybe we can create a data structure that _represents_ an Elm function value, keeping track of the `curried` arguments and closed-over values. The runtime can operate on that data structure and pass it around. When we finally have all the arguments ready and we’re ready to execute the body, we can call the WebAssembly function to evaluate the body expression and produce a return value. Let’s call the WebAssembly function an “evaluator function”.
+If somebody calls `curried` with one more argument, this is the expression that will calculate the return value. Same thing if somebody calls `myClosure` with two arguments.
+
+This gives us a clue how to start implementing this. All of the function values we’re passing around will need to have a _reference_ to the same WebAssembly function, which evaluates the body expression.
+
+In WebAssembly, we can’t pass functions around, only data. But maybe we can create a data structure that _represents_ an Elm function value, keeping track of the curried arguments and closed-over values. When we finally have all the arguments and we’re ready to evaluate the body expression, we can execute a WebAssembly function to produce a return value.
 
 There are still lots of details missing at this stage. In order to fill in the gaps, we’re going to need a bit of background knowledge on some of WebAssembly’s language features.
 
@@ -109,13 +113,13 @@ There are still lots of details missing at this stage. In order to fill in the g
 
 ## Linear memory
 
-WebAssembly modules have access to a block of “linear memory” that they can use to store and load data. It’s a linear array of bytes, indexed by a 32-bit integer. WebAssembly has built-in instructions to store and load integers and floats, but anything more complex has to be built up from raw bytes.
+WebAssembly modules have access to a block of "linear memory" that they can use to store and load data. It’s a linear array of bytes, indexed by a 32-bit integer. WebAssembly has built-in instructions to store and load integers and floats, but anything more complex has to be built up from raw bytes.
 
 The fact that everything is built up from raw bytes means that WebAssembly can be a compile target for lots of different languages. Different data structures will make sense for different languages, but they’re all just bytes in the end. It’s up to each compiler and runtime to define how those bytes are manipulated.
 
 ## Tables
 
-WebAssembly has a feature called “tables” which it uses to implement “indirect calls”. Indirect calls are a feature of almost every high-level language, but what are they?
+WebAssembly has a feature called "tables" which it uses to implement "indirect calls". Indirect calls are a feature of almost every high-level language, but what are they?
 
 When a machine executes a function call, it obviously needs some reference to know which function to invoke. In a _direct call_, that function reference is simply hardcoded, so it invokes the same function every time. In an _indirect call_, however, the function reference is provided by a runtime value instead. This is a very handy thing to be able to do, because it means the caller doesn’t need to know in advance the full list of functions it might have to call. Because of this, most languages have some version of this. C and C++ have function pointers, Java has class-based polymorphism, and Elm has first-class functions.
 
@@ -131,7 +135,7 @@ But for now, we already have enough knowledge to discuss how to implement first-
 
 # Representing closures as bytes
 
-As mentioned earlier, to represent an Elm function in WebAssembly we’ll need a function and a data structure. We’ll use the term “closure” to refer to the data structure, and “evaluator function” to refer to the WebAssembly function that will evaluate the body expression and produce a return value.
+As mentioned earlier, to represent an Elm function in WebAssembly we’ll need a function and a data structure. We’ll use the term "closure" to refer to the data structure, and "evaluator function" to refer to the WebAssembly function that will evaluate the body expression and produce a return value.
 
 One way of representing a closure in binary is the following, where each box represents an integer (4 bytes).
 
@@ -143,7 +147,7 @@ One way of representing a closure in binary is the following, where each box rep
 
 **`arity`** is the _remaining_ number of parameters to be applied to the closure. Every time we apply another argument, we insert a pointer to that argument, and decrement the arity. When it reaches zero, we’re ready to call the evaluator function.
 
-**`mem_ptr*`** are pointers representing the addresses in linear memory of the arguments and closed-over values. They all start off “empty” (zero), and are filled in reverse order as arguments are applied. So if the closure has an arity of 2, then `mem_ptr0` and `mem_ptr1` will be “empty”. When we apply the next argument, the `mem_ptr1` will be filled with the address of the argument value, and `arity` will be decremented from 2 to 1, with `mem_ptr0` still being empty.
+**`mem_ptr*`** are pointers representing the addresses in linear memory of the arguments and closed-over values. They all start off "empty" (zero), and are filled in reverse order as arguments are applied. So if the closure has an arity of 2, then `mem_ptr0` and `mem_ptr1` will be "empty". When we apply the next argument, the `mem_ptr1` will be filled with the address of the argument value, and `arity` will be decremented from 2 to 1, with `mem_ptr0` still being empty.
 
 &nbsp;
 
@@ -170,7 +174,7 @@ Let’s go through this from the top.
 
 Before applying the closure, we need to create a new copy of it so, that the old closure is still available for other code to use. All Elm values are immutable, and this is no exception.
 
-Next, we insert the applied arguments into the closure. The closure structure has one pointer “slot” for each argument. We need to make sure we put each argument in the right slot, and there’s a neat little trick we can use here to make this easy. Since the arity has to go down by 1 every time we apply an argument, we can actually use it to tell us which slot is next. All we have to do is fill them in reverse!
+Next, we insert the applied arguments into the closure. The closure structure has one pointer "slot" for each argument. We need to make sure we put each argument in the right slot, and there’s a neat little trick we can use here to make this easy. Since the arity has to go down by 1 every time we apply an argument, we can actually use it to tell us which slot is next. All we have to do is fill them in reverse!
 
 For example if the arity is 2, we’ll insert an argument into the closure at `mem_ptr1`, and if the arity is 1, we’ll insert the argument into the closure at `mem_ptr0`.
 
