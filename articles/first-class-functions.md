@@ -1,6 +1,6 @@
 ---
 title: Elm functions in WebAssembly
-published: false
+published: true
 description: Investigations of how Elm could compile to WebAssembly in the future
 tags: Elm, WebAssembly, compiler
 ---
