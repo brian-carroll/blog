@@ -11,7 +11,7 @@ I think one of the most interesting questions is: how do you implement first-cla
 
 &nbsp;
 
-# Contents
+## Contents
 
 [Elm and WebAssembly](#Elm-and-WebAssembly)
 [Elm’s first-class functions](#Elm-s-first-class-functions)
@@ -25,7 +25,7 @@ I think one of the most interesting questions is: how do you implement first-cla
 
 &nbsp;
 
-# Elm and WebAssembly
+## Elm and WebAssembly
 
 Before we get started, I just want to note that from what I’ve heard from the core team, there is currently no concrete plan for building WebAssembly into the Elm compiler. WebAssembly is still an MVP and won’t really be ready for Elm until it has Garbage Collection, and probably also access to the DOM and other Web APIs. That doesn’t look likely to happen in 2018.
 
@@ -37,7 +37,7 @@ Let’s break this down.
 
 &nbsp;
 
-# Elm’s first-class functions
+## Elm’s first-class functions
 
 Let's start by looking at some example Elm code, then list all the features of Elm functions that we’ll need to implement.
 
@@ -85,7 +85,7 @@ This is definitely not the simplest way to write this calculation! But it does i
 
 &nbsp;
 
-## Three key features
+### Three key features
 
 Firstly, Elm functions are first-class, meaning they are _values_ that can be returned from other functions (like `outerFunc`) and passed into other functions (like `higherOrder`).
 
@@ -93,7 +93,7 @@ Secondly, they support _lexical closure_. `innerFunc` "captures" the value of `c
 
 Finally, Elm functions support _partial application_. `myClosure` is a function that takes two arguments, but on line 17 we only apply one argument to it. As a result, we get a new function that is waiting for one more argument before it can actually run. This new function "remembers" the value that was partially applied, as well as the closed-over value.
 
-## Clues in the code
+### Clues in the code
 
 Note that we now have several Elm functions that will all will end up executing the _same line of code_ when they actually get executed! That's this expression:
 
@@ -109,15 +109,15 @@ There are still lots of details missing at this stage. In order to fill in the g
 
 &nbsp;
 
-# Key WebAssembly concepts
+## Key WebAssembly concepts
 
-## Linear memory
+### Linear memory
 
 WebAssembly modules have access to a block of "linear memory" that they can use to store and load data. It’s a linear array of bytes, indexed by a 32-bit integer. WebAssembly has built-in instructions to store and load integers and floats, but anything more complex has to be built up from raw bytes.
 
 The fact that everything is built up from raw bytes means that WebAssembly can be a compile target for lots of different languages. Different data structures will make sense for different languages, but they’re all just bytes in the end. It’s up to each compiler and runtime to define how those bytes are manipulated.
 
-## Tables
+### Tables
 
 WebAssembly has a feature called "tables" which it uses to implement "indirect calls". Indirect calls are a feature of almost every high-level language, but what are they?
 
@@ -133,7 +133,7 @@ But for now, we already have enough knowledge to discuss how to implement first-
 
 &nbsp;
 
-# Representing closures as bytes
+## Representing closures as bytes
 
 As mentioned earlier, to represent an Elm function in WebAssembly we’ll need a function and a data structure. We’ll use the term "closure" to refer to the data structure, and "evaluator function" to refer to the WebAssembly function that will evaluate the body expression and produce a return value.
 
@@ -151,35 +151,19 @@ One way of representing a closure in binary is the following, where each box rep
 
 &nbsp;
 
-# Function application
+## Function application
 
 We’ve already mentioned some of the things that need to happen when a closure is applied to some arguments, but here's the algorithm in full:
 
 - Make a new copy of the closure
 - For each applied argument
   - Let `a` be the remaining arity of the closure
-  - Write the address of the argument into `mem_ptr` at position `a-1`
+  - Write the address of the argument into the `mem_ptr` at position `a-1`
   - Decrement the arity `a`
 - If remaining arity is greater than 0
   - return the new closure
 - else
   - Use `call_indirect` to execute the function referenced by `func_index`, passing the closure as its argument
-
-Let’s go through this from the top.
-
-Before applying the closure, we need to create a new copy of it, so that the old closure is still available for other code to use. All Elm values are immutable, and the closure is no exception.
-
-Next, we insert the applied arguments into the closure. The closure structure has one pointer "slot" for each argument. We need to make sure we put each argument in the right slot, and there’s a neat little trick we can use here to make this easy. Since the arity has to go down by 1 every time we apply an argument, we can use it to tell us which slot is next. All we have to do is fill them in reverse!
-
-For example if the remaining arity is 2, we’ll insert an argument into the closure at `mem_ptr1`, and if the arity is 1, we’ll insert the argument into the closure at `mem_ptr0`. We don't actually need to know the total arity of the original function, which is nice.
-
-Finally, we check the remaining arity after applying all the arguments in this call. If the remaining arity is non-zero, this must be a partial application, and we just return the closure. If it’s zero, that means all arguments have been applied. We need to call the evaluator function, and return the value it gives us.
-
-Note that we are passing the closure data structure _into_ the evaluator function as its only argument. The closure structure contains all of the data we need to evaluate the body of our Elm function, because that’s exactly what it was designed for. So it’s the only argument the evaluator function needs.
-
-Inside the evaluator function, we’ll need to do some destructuring to get the individual arguments out of the closure structure. The compiler will have to generate the appropriate code for that.
-
-### Example
 
 Let's work through an example, applying two arguments to a closure of arity 2.
 
@@ -189,34 +173,42 @@ Here's what the data structure looks like before we apply any arguments. All of 
 | ---------- | ------- | ---------- | ---------- |
 | `123`      | `2`     | `null`     | `null`     |
 
-Now let's apply an argument, which we'll call `arg0`. We're filling the pointers in reverse, so it goes into `mem_ptr1`. And the arity goes down from 2 to 1.
+Before applying the closure, we need to create a new copy of it, so that the old closure is still available for other code to use. All Elm values are immutable, and the closure is no exception.
+
+Now let's apply an argument, `arg0`. Our algorithm says that for arity `2`, we should put the argument address into the `mem_ptr` at position `2-1=1`. In other words, `mem_ptr1`. Let's see what that looks like.
 
 | `fn_index` | `arity` | `mem_ptr0` | `mem_ptr1` |
 | ---------- | ------- | ---------- | ---------- |
 | `123`      | `1`     | `null`     | `arg0`     |
 
-Applying a second argument, which we'll call `arg1`, works the same way. We put the address of `arg1` into `mem_ptr0`, and reduce the arity again.
+Notice that we're filling the argument pointers in reverse. This is just an efficiency trick. If we filled them in ascending order, we'd need to know how many had already been applied so that we could skip over them and put the next argument in the next free position. That information would have to be stored as an extra field in the closure, taking up extra space.
+
+But if we fill the arguments in reverse, we only need to know the current arity. If the current arity is 2 then the first two positions are free, regardless of whether this is a simple two-parameter function, or a five-parameter function that has already had 3 other arguments applied.
+
+Let's apply one more argument, `arg1`. As before, we'll put the address of the argument into the highest available `mem_ptr`, which is `mem_ptr0`, and decrement the arity.
 
 | `fn_index` | `arity` | `mem_ptr0` | `mem_ptr1` |
 | ---------- | ------- | ---------- | ---------- |
 | `123`      | `0`     | `arg1`     | `arg0`     |
 
-At this point, we have all of the arguments and we're ready to execute `call_indirect`.
+Having applied all of the arguments we've got, we check the remaining arity. If it's non-zero, this must be a partial application, and we can just return the closure. But if it’s zero, that means all arguments have been applied. In that case, it's time to call the evaluator function, and return the value it gives us.
+
+Note that the evaluator function takes the closure structure as its only argument. It contains all of the necessary data, because that’s exactly what it was designed for!
 
 &nbsp;
 
-# Lexical closure
+## Lexical closure
 
 Let’s look again at our example of closing over values from an outer scope.
 
 ```elm
 outerFunc : Int -> (Int -> Int -> Int)
 outerFunc closedOver =
-   let
-       innerFunc arg1 arg2 =
-           closedOver + arg1 + arg2
-   in
-       innerFunc
+    let
+        innerFunc arg1 arg2 =
+            closedOver + arg1 + arg2
+    in
+        innerFunc
 ```
 
 To help us think about how to generate WebAssembly for `innerFunc`, let’s first refactor the source code to the equivalent version below.
@@ -224,12 +216,12 @@ To help us think about how to generate WebAssembly for `innerFunc`, let’s firs
 ```elm
 outerFunc : Int -> (Int -> Int -> Int)
 outerFunc closedOver =
-   let
-       -- Replace inner function definition with partial application
-       innerFunc =
-           transformedInnerFunc closedOver
-   in
-       innerFunc
+    let
+        -- Replace inner function definition with partial application
+        innerFunc =
+            transformedInnerFunc closedOver
+    in
+        innerFunc
 
 
 -- Move definition to top level, inserting a new first argument
@@ -243,7 +235,7 @@ The big win here is that we no longer have nested function definitions. Instead,
 
 &nbsp;
 
-# Code generation
+## Code generation
 
 We’re now ready to look at the steps the compiler needs to take to generate code for an Elm function.
 
@@ -258,7 +250,7 @@ We’re now ready to look at the steps the compiler needs to take to generate co
 
 &nbsp;
 
-# Summary
+## Summary
 
 One of the interesting challenges in compiling Elm to WebAssembly is how to implement first-class functions.
 
@@ -274,7 +266,7 @@ Finally we outlined some of the steps the compiler’s code generator needs to t
 
 &nbsp;
 
-# What’s next?
+## What’s next?
 
 I’m working on a prototype code generator to prove out these ideas. I’m making reasonable progress, and there don’t appear to be any major blockers, but it needs some more work to get it working. I’ll probably share something more if/when I get that far!
 
