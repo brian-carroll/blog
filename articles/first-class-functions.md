@@ -9,20 +9,17 @@ I’ve been pretty fascinated for the past few months with trying to understand 
 
 I think one of the most interesting questions is: how do you implement first-class functions in WebAssembly? JavaScript has them built in, but WebAssembly doesn’t. Treating functions as values is a pretty high level of abstraction, and WebAssembly is a very low-level language.
 
-&nbsp;
-
-## Contents
-
+**Contents**
 [Elm and WebAssembly](#Elm-and-WebAssembly)
-[Elm’s first-class functions](#Elm-s-first-class-functions)
+[Elm’s first-class functions](#Elms-first-class-functions)
 [Key WebAssembly concepts](#Key-WebAssembly-concepts)
 [Representing closures as bytes](#Representing-closures-as-bytes)
 [Function application](#Function-application)
 [Lexical closure](#Lexical-closure)
 [Code generation](#Code-generation)
 [Summary](#Summary)
-[What’s next?](#What-s-next)
-
+[What’s next?](#Whats-next)
+<a name="Elm-and-WebAssembly"></a>
 &nbsp;
 
 ## Elm and WebAssembly
@@ -34,7 +31,7 @@ But... it will get past MVP at some point, and this stuff is kind of fascinating
 So... how do you go about implementing first-class functions in a low-level language like WebAssembly? WebAssembly is all just low-level machine instructions, and machine instructions aren’t something you can "pass around"! And what about partial function application? And isn’t there something about "closing over" values from outside the function scope?
 
 Let’s break this down.
-
+<a name="Elms-first-class-functions"></a>
 &nbsp;
 
 ## Elm’s first-class functions
@@ -106,7 +103,7 @@ This gives us a clue how to start implementing this. All of the function values 
 In WebAssembly, we can’t pass functions around, only data. But maybe we can create a data structure that _represents_ an Elm function value, keeping track of the curried arguments and closed-over values. When we finally have all the arguments and we’re ready to evaluate the body expression, we can execute a WebAssembly function to produce a return value.
 
 There are still lots of details missing at this stage. In order to fill in the gaps, we’re going to need a bit of background knowledge on some of WebAssembly’s language features.
-
+<a name="Key-WebAssembly-concepts"></a>
 &nbsp;
 
 ## Key WebAssembly concepts
@@ -130,7 +127,7 @@ By the way, WebAssembly has this design for safety reasons. If functions were st
 If you’re interested in some further reading, I recommend Mozilla’s article on [Understanding the Text Format](https://developer.mozilla.org/en-US/docs/WebAssembly/Understanding_the_text_format), and the design document on [WebAssembly Semantics](https://github.com/WebAssembly/design/blob/master/Semantics.md).
 
 But for now, we already have enough knowledge to discuss how to implement first-class functions.
-
+<a name="Representing-closures-as-bytes"></a>
 &nbsp;
 
 ## Representing closures as bytes
@@ -148,7 +145,7 @@ One way of representing a closure in binary is the following, where each box rep
 **`arity`** is the _remaining_ number of parameters to be applied to the closure. Every time we apply another argument, we insert a pointer to that argument, and decrement the arity. When it reaches zero, we’re ready to call the evaluator function.
 
 **`mem_ptr*`** are pointers representing the addresses in linear memory of the arguments and closed-over values. They all start off "empty" (zero), and are filled in reverse order as arguments are applied. So if the closure has an arity of 2, then `mem_ptr0` and `mem_ptr1` will be "empty". When we apply the next argument, the `mem_ptr1` will be filled with the address of the argument value, and `arity` will be decremented from 2 to 1, with `mem_ptr0` still being empty.
-
+<a name="Function-application"></a>
 &nbsp;
 
 ## Function application
@@ -194,7 +191,7 @@ Let's apply one more argument, `arg1`. As before, we'll put the address of the a
 Having applied all of the arguments we've got, we check the remaining arity. If it's non-zero, this must be a partial application, and we can just return the closure. But if it’s zero, that means all arguments have been applied. In that case, it's time to call the evaluator function, and return the value it gives us.
 
 Note that the evaluator function takes the closure structure as its only argument. It contains all of the necessary data, because that’s exactly what it was designed for!
-
+<a name="Lexical-closure"></a>
 &nbsp;
 
 ## Lexical closure
@@ -232,7 +229,7 @@ transformedInnerFunc closedOver arg1 arg2 =
 Here we’ve moved the definition of the inner function to the top level, and inserted `closedOver` as a new first argument, instead of actually closing over it. This doesn’t make any difference to anyone who calls `outerFunc` - it still creates an `innerFunc` that remembers the value of `closedOver` it was created with.
 
 The big win here is that we no longer have nested function definitions. Instead, they’re all defined at top level. This is useful because we need to put all of our evaluator functions into one global WebAssembly function table. Remember, the table is WebAssembly’s way of supporting indirect function calls. So we’ll need the compiler to do this transformation on all nested function definitions.
-
+<a name="Code-generation"></a>
 &nbsp;
 
 ## Code generation
@@ -247,8 +244,8 @@ We’re now ready to look at the steps the compiler needs to take to generate co
 6.  Insert code into the parent scope that does the following
     - Create a new closure structure in memory
     - Partially apply the closed-over values from the parent scope
-
-&nbsp;
+      <a name="Summary"></a>
+      &nbsp;
 
 ## Summary
 
@@ -263,7 +260,7 @@ We can represent an Elm function using a WebAssembly function and a data structu
 We discussed a way to implement lexical closure. It involves automatically transforming Elm code, flattening nested function definitions so that they can be inserted into the WebAssembly function table. This transformation turns lexical closure into partial function application.
 
 Finally we outlined some of the steps the compiler’s code generator needs to take, and looked at the runtime algorithm for function application.
-
+<a name="Whats-next"></a>
 &nbsp;
 
 ## What’s next?
