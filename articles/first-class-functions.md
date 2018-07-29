@@ -5,7 +5,9 @@ description: Investigations of how Elm could compile to WebAssembly in the futur
 tags: Elm, WebAssembly, compiler
 ---
 
-I’ve been pretty fascinated for the past few months with trying to understand how the Elm compiler might be able to target WebAssembly in the future. What are the major differences from generating JavaScript? What are the hard parts, what approaches would make sense?
+I’ve been pretty fascinated for the past few months with trying to understand how the [Elm][elm] compiler might be able to target [WebAssembly][wasm] in the future. What are the major differences from generating JavaScript? What are the hard parts, what approaches would make sense?
+[elm]: http://elm-lang.org/
+[wasm]: https://webassembly.org/
 
 I think one of the most interesting questions is: how do you implement first-class functions in WebAssembly? JavaScript has them built in, but WebAssembly doesn’t. Treating functions as values is a pretty high level of abstraction, and WebAssembly is a very low-level language.
 
@@ -24,11 +26,14 @@ I think one of the most interesting questions is: how do you implement first-cla
 
 ## Elm and WebAssembly
 
-Before we get started, I just want to note that from what I’ve heard from the core team, there is currently no concrete plan for building WebAssembly into the Elm compiler. WebAssembly is still an MVP and won’t really be ready for Elm until it has Garbage Collection, and probably also access to the DOM and other Web APIs. That doesn’t look likely to happen in 2018.
+Before we get started, I just want to mention that from what I’ve heard from the core team, there is a general expectation that Elm will compile to WebAssembly some day, but currently no concrete plan. WebAssembly is still an MVP and won’t really be ready for Elm until it has garbage collection, and probably also access to the DOM and other Web APIs. The [GC extension][gc] is still in ["feature proposal"][gc-proposal] stage so it'll be quite a while before it's available.
+[gc]: https://github.com/WebAssembly/gc/blob/master/proposals/gc/Overview.md
+[gc-proposal]: https://github.com/WebAssembly/design/issues/1079
 
-But... it will get past MVP at some point, and this stuff is kind of fascinating, so let’s have a think about what it could look like!
+But... it will get released at some point, and WebAssembly is one of the suggested [research projects][elm-projects] for community members, and well, it's just really interesting! So let’s have a think about what Elm in WebAssembly could look like!
+[elm-projects]: https://github.com/elm/projects#explore-webassembly
 
-So... how do you go about implementing first-class functions in a low-level language like WebAssembly? WebAssembly is all just low-level machine instructions, and machine instructions aren’t something you can "pass around"! And what about partial function application? And isn’t there something about "closing over" values from outside the function scope?
+Now... how do you go about implementing first-class functions in a low-level language like WebAssembly? WebAssembly is all just low-level machine instructions, and machine instructions aren’t something you can "pass around"! And what about partial function application? And isn’t there something about "closing over" values from outside the function scope?
 
 Let’s break this down.
 <a name="Elms-first-class-functions"></a>
@@ -66,29 +71,15 @@ answer =
     higherOrder curried 3
 ```
 
-Running this code in the Elm REPL, we get the `answer` as 1+2+3=6
-
-```
-$ elm repl
----- elm-repl 0.18.0 -----------------------------------------------------------
-:help for help, :exit to exit, more at <https://github.com/elm-lang/elm-repl>
---------------------------------------------------------------------------------
-> import ElmFunctionsDemo exposing (..)
-> answer
-6 : Int
-```
-
-This is definitely not the simplest way to write this calculation! But it does illustrate all the most important features of Elm functions.
-
-&nbsp;
+In case you're wondering, the `answer` is 1+2+3=6. This is definitely not the simplest way to write this calculation, but it does illustrate all the most important features of Elm functions!
 
 ### Three key features
 
 Firstly, Elm functions are first-class, meaning they are _values_ that can be returned from other functions (like `outerFunc`) and passed into other functions (like `higherOrder`).
 
-Secondly, they support _lexical closure_. `innerFunc` "captures" the value of `closedOver`, which is defined outside of its body. `myClosure` "remembers" the value of `closedOver` that it was created with, which in this case is `1`.
+Secondly, they support _lexical closure_. `innerFunc` "captures" a value from it's parent's scope, called `closedOver`. This means that `myClosure` "remembers" the value of `closedOver` that it was created with, which in this case is `1`.
 
-Finally, Elm functions support _partial application_. `myClosure` is a function that takes two arguments, but on line 17 we only apply one argument to it. As a result, we get a new function that is waiting for one more argument before it can actually run. This new function "remembers" the value that was partially applied, as well as the closed-over value.
+Finally, Elm functions support _partial application_. `myClosure` is a function that takes two arguments, but the body of `curried`, we only apply one argument to it. As a result, we get a new function that is waiting for one more argument before it can actually run. This new function "remembers" the value that was partially applied, as well as the closed-over value.
 
 ### Clues in the code
 
@@ -269,14 +260,9 @@ I’m working on a prototype code generator to prove out these ideas. I’m maki
 
 I’ve also got some ideas for more blog posts around the topic of Elm in WebAssembly:
 
-- Byte-level representations of the other Elm data structures
-  - Extensible records, union types, lists, tuples
-  - Numbers, comparables and appendables
-- Code generation architecture
-  - WebAssembly AST and code gen structure
-  - Is it reasonable to generate Wasm from Haskell? Should we use Rust?
-- The Elm runtime in WebAssembly
-  - Platform, Scheduler, Task, Process, Effect Managers
+- Byte-level representations of the other Elm data structures (Extensible records, union types, numbers, comparables, appendables...)
+- Code generation architecture (WebAssembly AST, Is it reasonable to generate Wasm from Haskell? What about Rust?)
+- The Elm runtime in WebAssembly (Platform, Scheduler, Task, Process, Effect Managers...)
 - DOM, HTTP, and ports. Differences between Wasm MVP and post-MVP.
 - Strings and Unicode
 - Tail-Call Elimination with trampolines
