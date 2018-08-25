@@ -15,41 +15,7 @@ By the way, WebAssembly is still an MVP and won’t really be ready for Elm unti
 
 ## Built-in types 
 
-Let's start with the fundamentals: `Int`, `Float`, `Char`, `String`, `List` and `Tuple`. You probably learned these during your first day or two learning Elm, but don't be deceived! There's actually a lot of subtlety under the covers here. We're going to look really closely at all this stuff that we normally take for granted, pick it all apart, and then piece it back together again.
-
-Let's open up the REPL and take a close look at the type of the "append" operator, `++`.
-
-```
-$ elm repl
----- elm-repl 0.18.0 -----------------------------------------------------------
- :help for help, :exit to exit, more at <https://github.com/elm-lang/elm-repl>
---------------------------------------------------------------------------------
-> "hello " ++ "world"
-"hello world" : String
-> [1.5, 2.5] ++ [3.5, 4.5]
-[1.5,2.5,3.5,4.5] : List Float
-> (++)
-<function> : appendable -> appendable -> appendable
-> 1 ++ 2
--- TYPE MISMATCH --------------------------------------------- repl-temp-000.elm
-The left argument of (++) is causing a type mismatch.
-3|   1 ++ 2
-     ^
-(++) is expecting the left argument to be a:
-    appendable
-But the left argument is:
-    Float
-Hint: Only strings, text, and lists are appendable.
-> 
-```
-
-OK so firstly, Elm is telling us that `++` is a function. That shouldn't shock us too much. "It's just a function" is kind of Elm's thing. I mean OK, it *looks* different. The name `++` is a symbol rather than a normal word, and it goes in between its arguments rather than before them. But that's all just "syntax sugar" to make the source code nice. When it comes to how things *work* underneath, `++` is "just a function".
-
-But check out that type signature. It operates on something called `appendable`. But when we actually *use* it, the REPL doesn't say it's an `appendable`! The first result is a `String` and the second is a `List Float`.
-
-As usual with Elm, the clue is in the error message! Some types are `appendable` and others aren't.
-
-## SuperTypes 
+Let's start with the fundamentals: `Int`, `Float`, `Char`, `String`, `List` and `Tuple`. You probably learned these during your first day or two learning Elm, but don't be deceived! There's actually a lot of subtlety under the covers here.
 
 The Elm compiler defines a few "SuperTypes". (Other languages call them "typeclasses", but the Elm compiler source code calls them SuperTypes, so I'm going to go with that.) This is the mechanism that allows some functions like `++`, `+` and `>`, to work on *more than one but not all* value types.
 
@@ -74,89 +40,79 @@ Here's a breakdown of which types belong to which SuperTypes
 
 \* Lists and tuples are only comparable if their contents are comparable
 
-Low-level functions that operate on SuperTypes need to be able to look at an Elm value at *runtime*, and decide which type it is. For example the append function `++` needs to check whether it's working with Strings or Lists, and execute different low-level code for each, since they're different data structures.
-
-We can't actually write code like that in Elm though, it has to be done in Kernel code. That's a deliberate choice in the language design. You can only use pattern matches to distinguish between values of the same type, not between values of different types.
-
-How does this runtime type inspection work? What's happening in that Kernel code? And can we do it in WebAssembly?
+Low-level functions that operate on SuperTypes need to be able to look at an Elm value at *runtime*, and decide which type it is. For example the `compare` function (which is the basis for  `<`, `>`, `<=`, and `>=`) can accept five different types, and needs to run different low-level code for each. Since Elm code can only pattern-match on values from the *same* type, this has to be done in Kernel code. Let's look at the JavaScript implementation, and then think about how a WebAssembly version might work.
 
 
 
-## JavaScript representations 
+## Comparables in JavaScript 
 
-Well we can just take a peek at the [Elm Kernel code on GitHub][GitHub] to see how it's done.
+Well Elm is open source, so we can just take a peek at the [Kernel code for `compare`][GitHub] to see how it's done. I've copied it below with modified comments. When reading this, focus on the *conditions* for the `if` statements and ignore everything else!
 
-[GitHub]: https://github.com/elm-lang/core/blob/5.1.1/src/Native/Utils.js#L241-L276
+[GitHub]: https://github.com/elm/core/blob/master/src/Elm/Kernel/Utils.js#L87-L120
 
 ```js
-var Nil = { ctor: '[]' };
-
-function Cons(hd, tl)
+function _Utils_cmp(x, y, ord) // Elm compiler will have ensured that x and y have the same type
 {
-	return {
-		ctor: '::',
-		_0: hd,
-		_1: tl
-	};
+	if (typeof x !== 'object') // True for JS numbers and strings (Elm Int, Float, and String)
+	{
+		return x === y ? /*EQ*/ 0 : x < y ? /*LT*/ -1 : /*GT*/ 1;
+	}
+
+	if (x instanceof String) // True for Elm Char
+	{
+		var a = x.valueOf();
+		var b = y.valueOf();
+		return a === b ? 0 : a < b ? -1 : 1;
+	}
+	
+	if (x.$[0] === '#') // True for Elm Tuples ('#2' or '#3')
+	{
+		return (ord = _Utils_cmp(x.a, y.a))
+			? ord
+			: (ord = _Utils_cmp(x.b, y.b))
+				? ord
+				: _Utils_cmp(x.c, y.c);
+	}
+
+    // If we got this far, we've got Lists
+    // traverse conses until end of a list or a mismatch
+	for (; x.b && y.b && !(ord = _Utils_cmp(x.a, y.a)); x = x.b, y = y.b) {} // WHILE_CONSES
+	return ord || (x.b ? /*GT*/ 1 : y.b ? /*LT*/ -1 : /*EQ*/ 0);
 }
-
-function append(xs, ys)
-{
-	// append Strings
-	if (typeof xs === 'string')
-	{
-		return xs + ys;
-	}
-
-	// append Lists
-	if (xs.ctor === '[]')
-	{
-		return ys;
-	}
-    /* ... 'Cons' code ... */
 ```
 
-Notice the JavaScript `typeof` operator in the `append` function. This is one of the techniques Elm uses to distinguish between the different types within a SuperType. It sometimes uses `instanceof` too.
+Elm integers, floats and strings compile to JavaScript primitives and can be identified using JavaScript's `typeof` operator. This is not something we'll have available in WebAssembly, so we'll have to find another way.
 
-And what's going on with `.ctor`? It's an abbreviation for 'constructor' and it exists on almost all of the Elm types that are represented as JavaScript objects. For example the List type has two constructors, `[]` (Nil) and `::` (Cons).
+The other Elm types are all represented as different object types. `Char` values are represented as String objects and can be identified using the `instanceof` operator. String objects are just a little bit of JS weirdness that doesn't matter here except it happens to be handy for Elm to distinguish `Char` from `String` in debug mode. Anyway, the important thing is that `instanceof` is not available in WebAssembly, and we need something else.
 
-`ctor` is mostly used to distinguish constructors within a type, but in some places it's also used to distinguish between Elm types. For example if `ctor` is `::` then we know we're looking at Cons cell in a List, but we also know we're not looking at a tuple, whose `ctor` would begin with `_Tuple`. So there's both constructor and type information in `ctor`. This fact is used in the [implementation of `compare`](https://github.com/elm-lang/core/blob/5.1.1/src/Native/Utils.js#L165), which operates on lots of types.
+In the next part of the function we get a clue that when Elm values are represented as JS objects, they normally have a `$` property. This is set to different values for different types. It's `#2` or `#3` for Tuples, `[]` or `::` for Lists, and can take on various other values for custom types and records.
 
-So what have we learned that we can use when thinking about WebAssembly?
+Aha! This `$` thing actually looks like something we can use! We can easily find a way to represent that as bytes. In fact, when you compile Elm 0.19 to JavaScript using `--optimize`, the `$` property becomes a number! The empty List has $=0, a Cons cell has $=1, Tuple2 has $=2 and Tuple3 has $=3. That's *really* easy to represent as bytes. It can just be a small header prepended to the value.
 
-Well, our data structures for Elm values need to contain enough information to distinguish between
+OK so that's fine for lists and tuples, but what about Int, Float, Char and String? Well the easiest approach is to just give them a header too.
 
-- types of the same SuperType
-- constructors of the same type
-
-However, in the case of WebAssembly we'll want to find a way of doing this with raw bytes as the `ctor`, rather than strings. (Strings are an abstraction we'll have to actually build ourselves from bytes.)
+Let's see what that system looks like.
 
 
 
-## Proposed WebAssembly representations
+## Comparables in WebAssembly
 
-A proposed set of representations is depicted below. Each value amongst the basic types is prepended with a single byte that behaves similarly to the `ctor` field in JavaScript.
+A proposed set of representations is depicted below. Each value amongst the basic types is prepended with a single byte that behaves similarly to the `$` field in JavaScript.
 
-(Note that I'm only considering tuples of size 2 and 3 in this scheme. This could be extended later with an extra field, but 2 and 3 are the most common cases.)
-
-<img src="./value-representations.png" />
-
-
+<img src='./value-representations.png' />
 
 Using these representations, we can distinguish between any of the values that are members of `comparable`,  `appendable`, or`number`.
 
 For example, to add two Elm `number`values, the algorithm would be:
 
 - If constructor is 5 (`Float`)
-  - Do floating-point addition
+  - Do floating-point addition (f64.add)
 - else
-  - Do integer addition
+  - Do integer addition (i32.add)
 
 This is great because in WebAssembly, integer and floating-point addition are different instructions. We're not allowed to be ambiguous about it like in JavaScript.
 
 We can use similar algorithms to distinguish String (7) from List (0 or 1) for `appendable`.
-
-And finally, the implementation of `compare` will handle all cases from 0-7, which is sufficient to cover all the possible values it can operate on. Although it will need to check recursively on lists and tuples.
 
 
 
@@ -174,7 +130,7 @@ Of course there are tradeoffs! Let's have a look at some of the main ones before
 
 ## What do other languages do differently?
 
-OCaml is a great language to compare Elm with. It's from the same language family. And like Elm, but unlike Haskell, it's eagerly evaluated.
+OCaml is a great language to compare Elm with. It's from the same language family. And like Elm, it's eagerly evaluated.
 
 
 
