@@ -7,17 +7,6 @@ tags: #elm, #webassembly
 
 
 
-## TODO
-
-- Do I want Union types (custom types) and Records in the intro bit? Should say I'm not doing them if I'm not doing them.
-- Unicode: go there? Yeah kinda have to I think
-
-
-
-__________
-
-
-
 In my [last post][first-class-functions], I proposed some ideas for how Elm's first-class functions could work in WebAssembly.
 
 This time, let's look at some of the other value types in Elm. What do the most fundamental value types look like? Can integers and floating-point numbers just be raw machine numbers, or do they need to have some kind of wrapper? How about collections like Lists, Tuples and Union types? And what about the big one - extensible records, how would they work?
@@ -106,7 +95,7 @@ The other Elm types are all represented as different object types. `Char` values
 
 In the next part of the function we get a clue that when Elm values are represented as JS objects, they normally have a `$` property. This is set to different values for different types. It's `#2` or `#3` for Tuples, `[]` or `::` for Lists, and can take on various other values for custom types and records.
 
-Aha! This `$` thing gives us a clue how we can do this. It's just an extra piece of data that's bundled along with the value itself. In a byte-level implementation, we can make it a "header" that goes in front of the bytes for the value itself.
+Aha! This `$` thing gives us a clue how we can do this. It's just an extra piece of data that's bundled along with the value itself. In a byte-level implementation, we can make it a header that goes in front of the bytes for the value itself.
 
 Let's see what that system looks like.
 
@@ -122,7 +111,7 @@ Using these representations, we can distinguish between any of the values that a
 
 For example, to add two Elm `number`values, the algorithm would be:
 
-- If constructor is 5 (`Float`)
+- If tag is 5 (`Float`)
   - Do floating-point addition
 - else
   - Do integer addition
@@ -135,7 +124,97 @@ Functions operating on `appendable` values can use similar techniques to disting
 
 ### Structural sharing
 
-To have efficient immutable data structures, it's important that we do as much structural sharing as possible. The above implementations of List and Tuple allow for that by using pointers. For example when we copy a List, we'll just do a "shallow" copy, without recursively following pointers. Instead, the pointer can just be copied literally, so we get a second pointer to the same value without copying the value itself.
+To have efficient immutable data structures, it's important that we do as much structural sharing as possible. The above implementations of List and Tuple allow for that by using pointers. For example when we copy a List, we'll just do a "shallow" copy, without recursively following pointers. The pointer is copied literally, so we get a second pointer to the same value.
+
+
+
+## String Encoding
+
+WebAssembly has no string primitives, so they have to be implemented at the byte level. That makes sense because different source languages targeting WebAssembly may have different string representations, and WebAssembly needs to support that.
+
+Above I showed the String body containing a sequence of bytes. There are various "encodings" of characters to bytes, and the modern *de facto* standard is UTF-8. Most recently-developed languages use it as their default encoding (Go, Rust, etc.).
+
+**But**... in the browser, there is a cost to using UTF-8. The Web APIs implement *all* strings as UTF-16. This includes some non-obvious things. For example, when you ask the browser to create a "div" in the DOM using `document.createElement('div')`, that `'div'` is a [DOMString](https://heycam.github.io/webidl/#idl-DOMString), which is UTF-16. Similarly, when Elm's `Http` module passes a URL to `XmlHttpRequest `, that URL must be a UTF-16 string. The list goes on.
+
+In theory browser vendors *could* switch to supporting two encodings instead of one for [all 134 Web APIs](https://developer.mozilla.org/en-US/docs/Web/API), just to support WebAssembly. But I don't think that seems likely. It would make a lot more sense to simply provide access to the existing APIs from WebAssembly. Based on [Mozilla's blog articles on WebAssembly][mozilla-blog], the general approach seems to be to make WebAssembly look the same to the browser internals as JIT-compiled JavaScript, and I assume that would include encodings.
+
+[mozilla-blog]: https://hacks.mozilla.org/category/webassembly/
+
+I haven't found anything to 100% confirm this, but if I'm right, and Elm WebAssembly uses UTF-8 internally, the runtime will have to convert between UTF-8 and UTF-16 for every effect. It's not a complex conversion, but there's some performance cost.
+
+Based on this, it's worth actually asking the question whether UTF-8 is the right choice in the browser. As far as I can tell, the main arguments for UTF-8 over UTF-16 are as follows:
+
+1. UTF-8 is more compact since the representation of every character is either smaller or the same size. (Smaller strings may also be faster to iterate over, bringing some performance benefit.)
+2. UTF-16 implementations have historically tended to be buggy
+   - For example Elm currently inherits some problems from JavaScript's UTF-16 implementation. The example below shows that `String.length` counts 16-bit [code units][unicode-code-unit] but `String.foldl` iterates over [characters][unicode-char], which can be either one or two code units.
+
+[unicode-code-unit]: http://unicode.org/glossary/#code_unit
+[unicode-char]: http://unicode.org/glossary/#character
+
+```elm
+---- Elm 0.19.0 ----------------------------------------------------------------
+Read <https://elm-lang.org/0.19.0/repl> to learn more: exit, help, imports, etc.
+--------------------------------------------------------------------------------
+> s = "🙈🙉🙊"
+"🙈🙉🙊" : String
+> String.length s
+6 : Int
+> String.foldl (\_ nchars -> nchars + 1) 0 s
+3 : number
+```
+
+However, there's nothing that actually *prevents* a correct implementation of UTF-16. If we're starting from scratch on a new platform, we can just write a correct UTF-16 `String` library for Elm, and make things easier when communicating to the outside world via Web APIs.
+
+Correcting bugs/inconsistencies in the `String` package would break backward compatibility with previous versions of Elm. The JavaScript kernel code would need to match the WebAssembly kernel code, assuming both options exist in a future compiler. That would make `String.length` slower - O(N) instead of O(1). But breaking backward compatibility in favour of correctness might be the right choice.
+
+Maybe the conversion cost will be low enough that Elm can use UTF-8 internally without any real issues in practice. But at least, UTF-8 doesn't seem as obvious a choice in a browser context as it would be in another context. It seems like it needs some kind of benchmarking.
+
+Now here's a [huge list of reasons](http://utf8everywhere.org/) why UTF-8 is the best thing in the world, which I'm adding here because people sometimes get a bit hot and bothered about character encodings. But in this case... browsers, y'know?
+
+¯\\\_(ツ)\_/¯
+
+
+
+## Headers
+
+We've seen that types that belong to constrained type variables need a header tag to carry some type information. But it's actually helps the runtime implementation if we take this a step further and add a header to *every* Elm value.
+
+Having type tags on all values is useful for implementing the equality function `==`. Since Elm's definition of equality is recursive, the equality function needs to know how to access the children of each value. But different container types have different memory layouts, so we need to be able to distinguish them. (This kind of recursive traversal is also useful for Garbage Collection algorithms).
+
+All Elm types can be covered with only 11 tags, which only requires 4 bits.
+
+```c
+typedef enum {
+    Tag_Int,
+    Tag_Float,
+    Tag_Char,
+    Tag_String,
+    Tag_Nil,
+    Tag_Cons,
+    Tag_Tuple2,
+    Tag_Tuple3,
+    Tag_Custom,
+    Tag_Record,
+    Tag_Closure,
+} Tag;
+```
+
+It's also helpful to add a `size` parameter to the header, indicating the size in memory of the value in a way that is independent of its type. This is useful for memory operations like cloning and garbage collection, as well as for testing equality of strings, custom type values, and records.
+
+Finally if we want to implement a Garbage Collector we can also add some supplementary information in the header to mark whether values are "live" or not, or implement a [tri-color marking][tri-color] scheme. I'm not going to get into GC much, I just want to make sure my design is at least *compatible* with building a custom GC for Elm, even if that won't be necessary for [WebAssembly in the future][post-mvp-wasm], once it gets access to the browser's GC.
+
+In my [prototype][src-types-h] I've chosen the following bit assignments for the header. They add up to 32 bits in total, which is convenient for memory layout.
+
+|          | Bits | Description                                                  |
+| -------- | ---- | ------------------------------------------------------------ |
+| Tag      | 4    | Elm value type. See enum definition above                    |
+| Size     | 26   | Payload size in units of 32-bit ints. Max value 2<sup>26</sup>-1 => 256MB |
+| GC flags | 2    | Enough bits for tri-color marking                            |
+
+[post-mvp-wasm]: https://hacks.mozilla.org/2018/10/webassemblys-post-mvp-future/
+[tri-color]: https://en.wikipedia.org/wiki/Tracing_garbage_collection#Tri-color_marking
+[src-types-h]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/types.h
+
 
 
 
@@ -143,12 +222,16 @@ To have efficient immutable data structures, it's important that we do as much s
 
 I made an assumption above. I assumed that the type information needs to be attached to the *runtime* value representation. But just because that's how it's done in the current JavaScript implementation of Elm doesn't mean it's the only way to do it!
 
-It's also possible for a compiler to generate several single-type implementations of polymorphic functions like `compare` or `++` or `List.map`. There's a compiler called [MLton][mlton] that does this for the Standard ML language, a close relative of Elm, and they call it "monomorphizing". Evan mentions it as one of the [potential projects][projects] for people interested in contributing to Elm.
+It's also possible for a compiler to generate several single-type implementations of functions like `compare` or `++` and use the appropriate one for each individual call-site. That could eliminate the need for functions to distinguish between types at runtime.
+
+There's a compiler called [MLton][mlton] that does this for the Standard ML language, a close relative of Elm, and they call it "monomorphizing". Evan mentions it as one of the [potential projects][projects] for people interested in contributing to Elm.
 
 For me personally, I felt that investigating WebAssembly was more than big enough for a hobby project, so I haven't researched this any further. It could be a really interesting project for someone else though!
 
 [projects]: https://github.com/elm/projects#explore-monomorphizing-compilers
 [mlton]: http://mlton.org/
+
+Note that even if monomorphizing gets rid of the need to check types at runtime, having headers for each value could still be useful. For example many Garbage Collectors rely on headers to understand how to traverse pointers, so if Elm had its own GC then it might need headers. (Elm probably won't have its own GC in WebAssembly, it'll use the browser's GC, but perhaps in some future server-side Elm.)
 
 
 
@@ -160,7 +243,7 @@ In the proposed scheme above, all of the primitive values are "boxed". But lots 
 
 The idea is that since a pointer is usually the same size as an integer, it is not really necessary to put an integer in a "box" with a type header. It can be included directly in the relevant data structure.
 
-![](C:\Users\brian\Code\wasm\blog\articles\boxed-unboxed.svg)
+<img src="./boxed-unboxed.svg" />
 
 It's memory-efficient, and for any complex calculations with integers, it saves a lot of unboxing and re-boxing. But it also makes the runtime implementation a bit more difficult! We now have two possible ways of accessing elements inside a data structure. If it's an integer, the value is right there. But if it's anything else, we need to follow a pointer to find the value. And somehow we need to be able to tell which is which.
 
@@ -187,68 +270,15 @@ Anecdotally, I think usage of 64-bit integers in web development is pretty rare,
 
 
 
-## String Encoding
 
-WebAssembly has no string primitives, so they have to be implemented at the byte level. That makes sense because different source languages targeting WebAssembly may have different string representations, and WebAssembly needs to support that.
-
-Above I showed the String body containing a sequence of bytes. There are various "encodings" of characters to bytes, and the modern standard is UTF-8. That would really be the first choice for any modern language.
-
-**But**... in the browser, there is a cost to using UTF-8. The Web APIs implement *all* strings as UTF-16. We're not just talking about user-visible strings - the same applies to all parameters in all Web APIs. When you ask the browser to create a "div" in the DOM, that name "div" is a [DOMString](https://heycam.github.io/webidl/#idl-DOMString), which is UTF-16. (That's right, although HTML documents are most often encoded in UTF-8, the DOM is UTF-16.) Similarly, when Elm's `Http` module passes a URL to `XmlHttpRequest `, that URL must be a UTF-16 string. And if the call returns a JSON string, that's UTF-16 too.
-
-All of Elm's input and output data flows through the browser, so if Elm uses UTF-8 internally, it will have to do conversions on every effect.
-
-As far as I can tell, the main arguments for UTF-8 over UTF-16 are
-
-1. UTF-8 is more compact since the representation of every character is either smaller or the same size
-2. UTF-16 implementations have historically tended to be buggy
-   - For example some "string length" functions, including those in JavaScript and Elm, count 16-bit words instead of actual *characters* (which can be 16 or 32 bits depending on the character).
-
-```elm
----- Elm 0.19.0 ----------------------------------------------------------------
-Read <https://elm-lang.org/0.19.0/repl> to learn more: exit, help, imports, etc.
---------------------------------------------------------------------------------
-> s = "🙈🙉🙊"
-"🙈🙉🙊" : String
-> String.foldl (\_ nchars -> nchars + 1) 0 s
-3 : number
-> String.length s
-6 : Int
-```
-
-However, there's nothing that actually *prevents* us doing a correct implementation of UTF-16. If we're starting from scratch on a new platform, we can just build a correct UTF-16 system for Elm, that correctly supports all Unicode characters, and make it simpler to talk to the Web APIs.
-
-Now here's a [huge list of reasons](http://utf8everywhere.org/) why UTF-8 is the best thing in the world. Before you hardcore UTF-8 evangelists start bashing your keyboard at me in rage, please bear in mind that I've read that whole article and agree with everything it says. But... like... browsers, y'know? `¯\_(ツ)_/¯`
-
-I know Elm will eventually run on servers too. And plenty of languages have some support for more than one character encoding. So I'm not sure where that leaves everything.
-
-This is Evan's call and I don't envy it. I kind of want to nonchalantly drop the issue and back away slowly.
-
-
-
-## Custom types
-
-- Follow the example of List and Tuple
-- JS uses an object with `$` as constructor
-- Except when it's an Enum. That becomes an integer.
-- Constructors only need to be unique within a given type. Compiler ensures we never mix them up.
-
-
-
-## Bool and Unit
-
-`Bool` can be implemented as if it were a custom type with two constructors. (It's not "custom", it's built-in, but the only special syntax for it is the `if` keyword!) `True` and `False` can be global constant values, defined once per program at a fixed memory location. This means that when putting a Bool into a data structure, it's just a pointer like any other value. For example in `(True, 3.14, "Hi")` , the tuple itself just contains three pointers.
-
-Alternatively, `True` and `False` could be unboxed as the integers 1 and 0. But we still need a way to create a `List Bool`, so unboxing `Bool` requires the same machinery as unboxing `Int`. (In fact, that's how [OCaml][ocaml-values] implements Booleans.) As mentioned earlier, I don't intend to implement unboxing for now.
-
-Similarly, the Unit type, written as `()`, is just a "custom" type with a single constructor. Again, its runtime representation can either be a global constant or an unboxed integer, and again I'm choosing a global constant to keep the implementation simple.
 
 
 
 ## Extensible Records
 
-[Records](https://elm-lang.org/docs/records) are one of the most interesting parts of Elm's type system. When we're thinking about implementation, it's important to notice that only record *types* that are extensible. Individual *records* (the values themselves) are not extensible - they always have a definite set of fields that can never change, because everything is immutable. In other words, it's *polymorphism*.
+[Records](https://elm-lang.org/docs/records) are one of the most interesting parts of Elm's type system. It's important to notice that only record *types* that are extensible. Individual *records* (the values themselves) are not extensible - they always have a definite set of fields that can never change, because everything is immutable. In other words, extensible record types are a form of polymorphism. (It's called *row polymorphism* if you want to look it up.)
 
-For example, in this code, each function takes an extensible record type, which allows us to pass it a value of either type `Rec1` or `Rec2`. But all values are definitely `Rec1` or definitely `Rec2`.
+For example, in this code, each function takes an extensible record type, which allows us to pass it a value of either type `Rec1` or `Rec2`. But values are either definitely `Rec1` or definitely `Rec2`.
 
 ```elm
 type alias Rec1 = { myField : Int }
@@ -256,64 +286,80 @@ type alias Rec2 = { myField : Int, otherField : Bool }
 
 sumMyField : List { r | myField : Int } -> Int
 sumMyField recList =
-	List.sum .myField recList   -- .myField is a function that can be passed around
+	List.sum .myField recList   -- accessor .myField is an Elm function
 
 incrementMyField : { r | myField : Int } -> r
 incrementMyField r =
 	{ r | myField = r.myField + 1 }  -- record update expression
 ```
 
-The basic operators that work on extensible record types are "accessors" and "updates". In both cases we need to *find* the relevant field in a particular record before we can do anything with it. So there needs to be some mechanism to look up the position of a field within a record.
+The basic operators that work on extensible record types are accessor functions and update expressions. In both cases we need to *find* the relevant field in a particular record before we can do anything with it. So there needs to be some mechanism to look up the position of a field within a record.
 
-I've developed a working prototype in C that compiles to WebAssembly. There are three aspects to understand: fields, field sets and records values.
+I've developed a [working prototype][src-utils] of these features in C that compiles to WebAssembly, so I'll explain how that works and we'll look at some snippets of code along the way.
 
 ### Field IDs as integers
 
 In Elm source code, a field is a human-friendly label for a parameter. But the 0.19 compiler is able to convert them to shortened names in the generated JavaScript, using its `--optimize` mode. To achieve this, it keeps track of all the field names in a program so that it can [generate unique shortened names][shortnames] for each.
 
-[shortnames]:https://github.com/elm/compiler/blob/master/compiler/src/Generate/JavaScript/Mode.hs#L79-L106
+[shortnames]:https://github.com/elm/compiler/blob/0.19.0/compiler/src/Generate/JavaScript/Mode.hs#L79
 
 For WebAssembly we need a way to represent fields as numbers rather than short names. But luckily it's relatively easy to adapt 0.19's name-shortening code to do that. We can just take the same set of field names and map them to integer field IDs instead.
 
-### C data structures
+### Data structures
 
-```c
-typedef struct {
-    u32 size;
-    u32 fields[];
-} FieldSet;
+Let's see how we can represent records, using the following value as an example
 
-typedef struct {
-    Header header;
-    FieldSet* fieldset;
-    void* values[];
-} Record;
+```elm
+type alias ExampleRecordType =
+    { field123 : Int
+    , field456 : Float
+    }
+
+example : ExampleRecordType
+example =
+    { field123 = 42
+    , field456 = 3.14159
+    }
 ```
 
-The `FieldSet` data structure represents a record *type* in an Elm program. It's simply an array of integers that would be populated by the Elm compiler, containing the field IDs for that type. All records of the same type will point to a single shared `FieldSet`. The order of the fields doesn't matter, but it's useful to arrange them in ascending order because it makes searching for a specific field more efficient.
+This can be represented by the collection of low-level structures below. For illustration, we assume the compiler has converted the field name `field123` to the integer 123, and `field456` to 456.
 
-The `Record` structure contains a pointer to the corresponding `FieldSet` and an array of pointers to the parameter values. The value pointers are arranged in the same order as the field IDs in the `FieldSet`.
+<img height="400px" src ="C:\Users\brian\Code\wasm\blog\articles\records-fieldset-with-numbers.svg" />
 
-This arrangement of data structures enables fairly simple implementations of accessor functions and update expressions.
+The `FieldSet` data structure is an array of integers with a size, and represents `ExampleRecordType`. The Elm compiler would generate one instance for each record type, and populate it with the relevant integer field IDs. All records of the same type point to a single shared `FieldSet`.
+
+The `Record` itself is a collection of pointers, referencing both its `FieldSet` and its parameter values. The value pointers are arranged in the same order as the field IDs in the `FieldSet`, so that the runtime can find the value corresponding to a particular field. Let's see how that works in accessor functions and update expressions.
+
+
 
 ### Accessor functions
 
-An accessor is an Elm function that does the following
+An accessor for a particular field is an Elm function that does the following:
 
-- Given a field ID and a `Record`
-- Find the index of the field ID in the record's `FieldSet`
-- Return the value at the same index in the record's `values` array
+- For a predetermined field ID
+  - Given a `Record`
+  - Find the index of the field ID in the record's `FieldSet`
+  - Return the value at the same index in the record's `values` array
 
-An accessor function is created by partially applying the field ID to a Kernel function. This means it has exactly the same representation as any other Elm function and can be passed around as a value. You can check out the [source code][src-utils] or read my previous post on [Elm functions in Wasm][func-post] for more details.
+In Elm code, accessor functions only operate on a specific field name. For WebAssembly, the simplest way to do this is to define an Elm Kernel function whose first argument is the field ID. Then in the generated code we can partially apply it to any field ID to get an accessor function specialized to that field.
+
+This means the accessor has exactly the same representation as any other Elm function and can be passed around as a value. Check out the [source code][src-utils] or read my previous post on [Elm functions in Wasm][first-class-functions] for more details.
 
 [src-utils]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/utils.c
-[func-post]: https://dev.to/briancarroll/elm-functions-in-webassembly-50ak
 
 
 
 ### Update expressions
 
-A record update expression can be implemented using the following C function
+- Given a record, and a set of field IDs and values to update
+- Make new record by cloning the old one
+- For each (field ID, value) pair
+  - Find the position of the field ID in the record's `FieldSet`
+  - At the same position in the new record, overwrite the value pointer to reference the update value
+
+
+
+The following C function implements this:
 
 ```c
 Record* record_update(Record* r, u32 n_updates, u32 fields[], void* values[]) {
@@ -328,15 +374,17 @@ Record* record_update(Record* r, u32 n_updates, u32 fields[], void* values[]) {
 }
 ```
 
-First we clone the record to create a new one. The for each field ID to be updated, we find its position in the `FieldSet`, and insert the corresponding value into the new record at that position. I've left out the details of `clone` and `fieldset_search` but they pretty much do what you'd expect. Feel free to take a look at the  [source code][src-utils].
+I've left out the details of `clone` and `fieldset_search` but they pretty much do what you'd expect. Feel free to take a look at the  [source code][src-utils], which includes [tests][src-utils-test] that mimic generated code from the compiler.
+
+[src-utils-test]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/utils_test.c
 
 
 
 ### Records in similar languages
 
-[OCaml][ocaml-values] has records, but not extensible record types. Without the polymorphism, a given field always refers to the same position in a record type, so all field names can safely be transformed into position offsets at compile time. In Elm we have to do that at runtime.
+[OCaml][ocaml-values] has records, but not extensible record types. That means a given field always refers to the same position in a record type, so all field names can safely be transformed into position offsets at compile time. We can't use the same system for Elm because we need to be able to access the same fieldname in different record types using a single accessor function or update expression.
 
-Haskell has extensible records, and the original paper on them can be [here][haskell-ext-records]. The focus is very much on trying to make the record system backwards-compatible with Haskell's pre-existing type system, which were positional rather than named. Unfortunately this means that most of their design decisions were driven by a constraint that Elm just doesn't have, so it wasn't directly useful.
+Haskell has extensible records, and the original paper on them can be [here][haskell-ext-records]. The focus is very much on trying to make the record system backwards-compatible with Haskell's pre-existing types, which were all positional rather than named. Unfortunately this means that most of their design decisions were driven by a constraint that Elm just doesn't have, so I didn't find it directly useful.
 
 [haskell-ext-records]: http://web.archive.org/web/20160322051608/http://research.microsoft.com/en-us/um/people/simonpj/Haskell/records.html
 
@@ -344,3 +392,66 @@ However the `FieldSet` concept is very much inspired by the [InfoTable][info-tab
 
 [info-table]: https://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/HeapObjects#InfoTables
 
+
+
+## Custom types
+
+```elm
+type MyCustomType
+  = Ctor0
+  | Ctor1 Int Float
+
+myCtor1 = Ctor1 42 3.14159
+```
+
+
+
+<img height="267px" src="./custom-types.svg" />
+
+
+
+
+
+
+
+
+
+
+
+- needs a header because equality
+- needs a ctor for pattern matching
+- needs params
+
+
+
+
+
+- Draw memory layout using boxes
+- JS uses an object with `$` as constructor
+- Except when it's an Enum. That becomes an integer.
+- Constructors only need to be unique *within* a given type. Compiler ensures we never mix them up, so runtime doesn't need to care about it. Constructor IDs can be reused.
+  - In pattern matching, compiler ensures we only match against constructors *within* a type
+- Constructors without parameters are global constants
+- Constructors with parameters are functions in the runtime
+
+
+
+## Bool and Unit
+
+`Bool` can be implemented as if it were a custom type with two constructors. (OK, it's not "custom", it's built-in, but the only thing that treats it specially is the `if` expression. Otherwise it's the same thing.)
+
+```elm
+type Bool
+	= True
+	| False
+```
+
+`True` and `False` are constructors without any parameters, so they can be global constant values, defined once per program at a fixed memory location. This means that when putting a Bool into a data structure, it's just a pointer like any other value. For example in `(True, 3.14, "Hi")` , the tuple itself just contains three pointers.
+
+Alternatively, `True` and `False` could be unboxed as the integers 1 and 0. But we still need a way to create a `List Bool`, so unboxing `Bool` requires the same machinery as unboxing `Int`. (In fact, that's how [OCaml][ocaml-values] implements Booleans.) As mentioned earlier, I don't intend to implement unboxing for now.
+
+Similarly, the Unit type, written as `()`, is just a "custom" type with a single constructor. Again, its runtime representation can either be a global constant or an unboxed integer, and again I'm choosing a global constant to keep the implementation simple.
+
+
+
+## 
