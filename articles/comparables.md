@@ -1,5 +1,5 @@
 ---
-title: Elm in Wasm: Value Representations
+title: Elm in Wasm: Comparable values
 published: false
 description: 
 tags: #elm, #webassembly

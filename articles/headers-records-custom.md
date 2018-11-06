@@ -1,6 +1,9 @@
-
-
-
+---
+title: Elm in Wasm: Headers, Records and Custom types
+published: false
+description: 
+tags: #elm, #webassembly
+---
 
 ## Headers
 
