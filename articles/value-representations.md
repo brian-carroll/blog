@@ -175,48 +175,6 @@ Now here's a [huge list of reasons](http://utf8everywhere.org/) why UTF-8 is the
 
 
 
-## Headers
-
-We've seen that types that belong to constrained type variables need a header tag to carry some type information. But it's actually helps the runtime implementation if we take this a step further and add a header to *every* Elm value.
-
-Having type tags on all values is useful for implementing the equality function `==`. Since Elm's definition of equality is recursive, the equality function needs to know how to access the children of each value. But different container types have different memory layouts, so we need to be able to distinguish them. (This kind of recursive traversal is also useful for Garbage Collection algorithms).
-
-All Elm types can be covered with only 11 tags, which only requires 4 bits.
-
-```c
-typedef enum {
-    Tag_Int,
-    Tag_Float,
-    Tag_Char,
-    Tag_String,
-    Tag_Nil,
-    Tag_Cons,
-    Tag_Tuple2,
-    Tag_Tuple3,
-    Tag_Custom,
-    Tag_Record,
-    Tag_Closure,
-} Tag;
-```
-
-It's also helpful to add a `size` parameter to the header, indicating the size in memory of the value in a way that is independent of its type. This is useful for memory operations like cloning and garbage collection, as well as for testing equality of strings, custom type values, and records.
-
-Finally if we want to implement a Garbage Collector we can also add some supplementary information in the header to mark whether values are "live" or not, or implement a [tri-color marking][tri-color] scheme. I'm not going to get into GC much, I just want to make sure my design is at least *compatible* with building a custom GC for Elm, even if that won't be necessary for [WebAssembly in the future][post-mvp-wasm], once it gets access to the browser's GC.
-
-In my [prototype][src-types-h] I've chosen the following bit assignments for the header. They add up to 32 bits in total, which is convenient for memory layout.
-
-|          | Bits | Description                                                  |
-| -------- | ---- | ------------------------------------------------------------ |
-| Tag      | 4    | Elm value type. See enum definition above                    |
-| Size     | 26   | Payload size in units of 32-bit ints. Max value 2<sup>26</sup>-1 => 256MB |
-| GC flags | 2    | Enough bits for tri-color marking                            |
-
-[post-mvp-wasm]: https://hacks.mozilla.org/2018/10/webassemblys-post-mvp-future/
-[tri-color]: https://en.wikipedia.org/wiki/Tracing_garbage_collection#Tri-color_marking
-[src-types-h]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/types.h
-
-
-
 
 ## Alternatives for type information
 
@@ -272,6 +230,52 @@ Anecdotally, I think usage of 64-bit integers in web development is pretty rare,
 
 
 
+---------
+
+
+
+
+
+## Headers
+
+We've seen that types that belong to constrained type variables need a header tag to carry some type information. But it's actually helpful to add a header to *every* Elm value.
+
+Having type tags on all values is useful for implementing the equality function `==`. Since Elm's definition of equality is recursive, the equality function needs to know how to access the children of each value. But different container types have different memory layouts, so we need to be able to distinguish them. (This kind of recursive traversal is also useful for Garbage Collection algorithms).
+
+All Elm types can be covered with only 11 tags, which only requires 4 bits.
+
+```c
+typedef enum {
+    Tag_Int,
+    Tag_Float,
+    Tag_Char,
+    Tag_String,
+    Tag_Nil,
+    Tag_Cons,
+    Tag_Tuple2,
+    Tag_Tuple3,
+    Tag_Custom,
+    Tag_Record,
+    Tag_Closure,
+} Tag;
+```
+
+It's also helpful to add a `size` parameter to the header, indicating the size in memory of the value in a way that is independent of its type. This is useful for memory operations like cloning and garbage collection, as well as for testing equality of strings, custom type values, and records.
+
+Finally if we want to implement a Garbage Collector we can also add some supplementary information in the header to mark whether values are "live" or not, or implement a [tri-color marking][tri-color] scheme. I'm not going to get into GC much, I just want to make sure my design is at least *compatible* with building a custom GC for Elm, even if that won't be necessary for [WebAssembly in the future][post-mvp-wasm], once it gets access to the browser's GC.
+
+In my [prototype][src-types-h] I've chosen the following bit assignments for the header. They add up to 32 bits in total, which is convenient for memory layout.
+
+|          | Bits | Description                                                  |
+| -------- | ---- | ------------------------------------------------------------ |
+| Tag      | 4    | Elm value type. See enum definition above                    |
+| Size     | 26   | Payload size in units of 32-bit ints. Max value 2<sup>26</sup>-1 => 256MB |
+| GC flags | 2    | Enough bits for tri-color marking                            |
+
+[post-mvp-wasm]: https://hacks.mozilla.org/2018/10/webassemblys-post-mvp-future/
+[tri-color]: https://en.wikipedia.org/wiki/Tracing_garbage_collection#Tri-color_marking
+[src-types-h]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/types.h
+
 
 
 ## Extensible Records
@@ -322,13 +326,13 @@ example =
     }
 ```
 
-This can be represented by the collection of low-level structures below. For illustration, we assume the compiler has converted the field name `field123` to the integer 123, and `field456` to 456.
+This can be represented by the collection of low-level structures below. For illustration, we assume the compiler has converted the field name `field123` to the integer 123, and `field456` to 456. In this diagram, the headers are denoted as `(Elm type, payload size in integers)`. Floats are 64 bits. Integers and pointers are 32.
 
-<img height="400px" src ="C:\Users\brian\Code\wasm\blog\articles\records-fieldset-with-numbers.svg" />
+<img height="400px" src ="./records-fieldset-numbers-headers.svg" />
 
-The `FieldSet` data structure is an array of integers with a size, and represents `ExampleRecordType`. The Elm compiler would generate one instance for each record type, and populate it with the relevant integer field IDs. All records of the same type point to a single shared `FieldSet`.
+The `FieldSet` data structure is an array of integers with a size. It is a static piece of metadata about the record type `ExampleRecordType`. The Elm compiler would generate one instance for each record type, and populate it with the relevant integer field IDs. All records of the same type point to a single shared `FieldSet`. The `FieldSet` does not need a `header` field since it is never cloned or garbage-collected. It can only be accessed through a `Record` so we don't need to give it a type tag either.
 
-The `Record` itself is a collection of pointers, referencing both its `FieldSet` and its parameter values. The value pointers are arranged in the same order as the field IDs in the `FieldSet`, so that the runtime can find the value corresponding to a particular field. Let's see how that works in accessor functions and update expressions.
+The `Record` itself is a collection of pointers, referencing its `FieldSet` and its parameter values. The value pointers are arranged in the same order as the field IDs in the `FieldSet`, so that accessor functions and update expressions can easily find the value corresponding to a particular field ID.
 
 
 
@@ -341,9 +345,14 @@ An accessor for a particular field is an Elm function that does the following:
   - Find the index of the field ID in the record's `FieldSet`
   - Return the value at the same index in the record's `values` array
 
-In Elm code, accessor functions only operate on a specific field name. For WebAssembly, the simplest way to do this is to define an Elm Kernel function whose first argument is the field ID. Then in the generated code we can partially apply it to any field ID to get an accessor function specialized to that field.
+In Elm, accessor functions only operate on a specific field name. The simplest way to implement this is to define a kernel function whose first argument is the field ID. In the generated code we can partially apply it to any field ID to get an accessor function for that field ID. This means the accessor has exactly the same representation as any other Elm function and can be passed around as a value.
 
-This means the accessor has exactly the same representation as any other Elm function and can be passed around as a value. Check out the [source code][src-utils] or read my previous post on [Elm functions in Wasm][first-class-functions] for more details.
+A snippet from the C implementation is shown below. `fieldset_search` implements a binary search and returns the position of a given field ID in a `FieldSet`. If you're interested in more details, check out the [full source][src-utils], and perhaps read my previous post on [Elm functions in Wasm][first-class-functions].
+
+```c
+u32 index = fieldset_search(record->fieldset, field->value);
+return record->values[index];
+```
 
 [src-utils]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/utils.c
 
@@ -351,50 +360,79 @@ This means the accessor has exactly the same representation as any other Elm fun
 
 ### Update expressions
 
-- Given a record, and a set of field IDs and values to update
-- Make new record by cloning the old one
-- For each (field ID, value) pair
-  - Find the position of the field ID in the record's `FieldSet`
-  - At the same position in the new record, overwrite the value pointer to reference the update value
+Elm update expressions look like this:
 
+```elm
+updatedRecord =
+    { originalRecord
+          | updatedField1 = newValue1
+          , updatedField2 = newValue2
+    }
+```
 
+In Elm 0.19 this is implemented by [a JavaScript function](https://github.com/elm/core/blob/1.0.0/src/Elm/Kernel/Utils.js#L151-L166) that clones the old record, and then updates each of the selected fields in the new record.
 
-The following C function implements this:
+```js
+function _Utils_update(oldRecord, updatedFields) {
+	var newRecord = {};
+	for (var key in oldRecord) {
+		newRecord[key] = oldRecord[key];
+	}
+	for (var key in updatedFields) {
+		newRecord[key] = updatedFields[key];
+	}
+	return newRecord;
+}
+```
+
+We can do something similar in C as follows:
 
 ```c
-Record* record_update(Record* r, u32 n_updates, u32 fields[], void* values[]) {
+Record* Utils_update(Record* r, u32 n_updates, u32 fields[], void* values[]) {
     Record* r_new = clone(r);
-
     for (u32 i=0; i<n_updates; ++i) {
         u32 field_pos = fieldset_search(r_new->fieldset, fields[i]);
         r_new->values[field_pos] = values[i];
     }
-
     return r_new;
 }
 ```
 
-I've left out the details of `clone` and `fieldset_search` but they pretty much do what you'd expect. Feel free to take a look at the  [source code][src-utils], which includes [tests][src-utils-test] that mimic generated code from the compiler.
+I've chosen to use 3 separate parameters for the update information, which is not as neat as the single object in the JavaScript version. But in C syntax, constructing a record at the call-site is not as convenient as it is in JS, and seems a waste when we're just going to deconstruct immediately anyway.
+
+I've left out the details of `clone` and `fieldset_search` but they pretty much do what you'd expect. Feel free to take a look at the [full source code][src-utils], which includes [tests][src-utils-test] that mimic generated code from the compiler.
 
 [src-utils-test]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/utils_test.c
 
 
 
+### Differences from JavaScript
+
+JavaScript already has the concept of accessing a named field of an object, so current versions of Elm build on top of this.
+
+C also has `structs` with named fields, and the C compiler can work out the relevant byte offsets to access them. But we can't use that to implement Elm accessors. It's not feasible to create a system where a single function can operate on *any* `struct` with a given field name regardless of its offset within that `struct`, and where the particular `struct` type is determined dynamically at runtime.
+
+
+
 ### Records in similar languages
 
-[OCaml][ocaml-values] has records, but not extensible record types. That means a given field always refers to the same position in a record type, so all field names can safely be transformed into position offsets at compile time. We can't use the same system for Elm because we need to be able to access the same fieldname in different record types using a single accessor function or update expression.
+[OCaml][ocaml-values] has records, but not extensible record types. That means a given field always refers to the same position in a record type, so there's no need to search for it at runtime. All field names can safely be transformed into position offsets at compile time.
 
-Haskell has extensible records, and the original paper on them can be [here][haskell-ext-records]. The focus is very much on trying to make the record system backwards-compatible with Haskell's pre-existing types, which were all positional rather than named. Unfortunately this means that most of their design decisions were driven by a constraint that Elm just doesn't have, so I didn't find it directly useful.
+Haskell has extensible records, and the original paper on them is [here][haskell-ext-records]. The focus is very much on trying to make the record system backwards-compatible with Haskell's pre-existing types, which were all positional rather than named. Unfortunately this means that most of their design decisions were driven by a constraint that Elm just doesn't have, so I didn't find it directly useful.
+
+However the `FieldSet` concept is very much inspired by the [InfoTable][info-table] that is generated for every type in a Haskell program.
 
 [haskell-ext-records]: http://web.archive.org/web/20160322051608/http://research.microsoft.com/en-us/um/people/simonpj/Haskell/records.html
-
-However the `FieldSet` concept is very much inspired by the [InfoTable][info-table] that exists for every type in a Haskell program.
 
 [info-table]: https://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/HeapObjects#InfoTables
 
 
 
 ## Custom types
+
+Custom types work similarly to Records, but they're simpler because the parameters are positional rather than named. We don't need a separate `FieldSet` structure, and we don't need to search for the position of a parameter because it's known at compile time.
+
+Let's take a simple example where one constructor takes no parameters and the other takes two.
 
 ```elm
 type MyCustomType
@@ -404,41 +442,23 @@ type MyCustomType
 myCtor1 = Ctor1 42 3.14159
 ```
 
+The data structures for this example are illustrated below.
 
+<img height="267px" src="./custom-types-headers.svg" />
 
-<img height="267px" src="./custom-types.svg" />
+Custom types need a type tag so that the equality function `==` can distinguish them from other Elm values.
 
+The `Custom` structure needs a field `ctor` to identify with variant or constructor it came from. This value needs to be unique *within* a given type so that we can implement pattern matching. But there is no need for it to be unique within the *program* because the Elm compiler ensures that we can never compare or pattern-match values of different types.
 
+Variants that take parameters need an associated constructor function, generated by the compiler.
 
-
-
-
-
-
-
-
-
-- needs a header because equality
-- needs a ctor for pattern matching
-- needs params
+Variants that take no parameters are static constants in the program. They have no constructor function and there only needs to be one instance of the value per program. For example the list `[Ctor0, Ctor0, Ctor0]` would just contain three pointers to the same memory address where `Ctor0` is located.
 
 
 
+## Bool
 
-
-- Draw memory layout using boxes
-- JS uses an object with `$` as constructor
-- Except when it's an Enum. That becomes an integer.
-- Constructors only need to be unique *within* a given type. Compiler ensures we never mix them up, so runtime doesn't need to care about it. Constructor IDs can be reused.
-  - In pattern matching, compiler ensures we only match against constructors *within* a type
-- Constructors without parameters are global constants
-- Constructors with parameters are functions in the runtime
-
-
-
-## Bool and Unit
-
-`Bool` can be implemented as if it were a custom type with two constructors. (OK, it's not "custom", it's built-in, but the only thing that treats it specially is the `if` expression. Otherwise it's the same thing.)
+`Bool` can be implemented as a custom type with two constructors. It's not exactly "custom", it's built-in, but it works the same way. (The only thing in Elm that treats `Bool` specially is the `if` expression.)
 
 ```elm
 type Bool
@@ -446,12 +466,18 @@ type Bool
 	| False
 ```
 
-`True` and `False` are constructors without any parameters, so they can be global constant values, defined once per program at a fixed memory location. This means that when putting a Bool into a data structure, it's just a pointer like any other value. For example in `(True, 3.14, "Hi")` , the tuple itself just contains three pointers.
+`True` and `False` are constructors without any parameters, so they can be global constant values, defined once per program at a fixed memory location.
 
-Alternatively, `True` and `False` could be unboxed as the integers 1 and 0. But we still need a way to create a `List Bool`, so unboxing `Bool` requires the same machinery as unboxing `Int`. (In fact, that's how [OCaml][ocaml-values] implements Booleans.) As mentioned earlier, I don't intend to implement unboxing for now.
+An alternative way to implement `Bool` would be to use the unboxed integers 1 and 0. But we'd still need a way to create a `List Bool`, and if `Bool` were unboxed, the list would contain integers instead of pointers.This means that unboxing `Bool` requires the same machinery as unboxing `Int`. (In fact, that's how [OCaml][ocaml-values] implements Booleans.) As mentioned previously, I don't intend to implement unboxed integers for now.
 
-Similarly, the Unit type, written as `()`, is just a "custom" type with a single constructor. Again, its runtime representation can either be a global constant or an unboxed integer, and again I'm choosing a global constant to keep the implementation simple.
+## Unit
+
+The Unit type, written as `()`, is just a "custom" type with a single constructor. It's equivalent to the definition below, except that it has its own special symbol `()`.
+
+```elm
+type Unit = Unit
+```
+
+Again, its runtime representation can either be a global constant or an unboxed integer, and again I'm choosing the "boxed" version to keep the implementation simple.
 
 
-
-## 
