@@ -5,6 +5,27 @@ description:
 tags: #elm, #webassembly
 ---
 
+## WebAssembly code generation
+
+### Direct to WebAssembly
+
+- I forked Elm compiler and made a code generator for WebAssembly
+- Modelled the module structure
+- Created Haskell functions representing the instruction set
+- Got an example Elm program working
+- Limitation: the compiler always generates one specific program and ignores your input Why? No runtime
+
+### Rust as an intermediate language
+
+- Hard
+- 
+
+### C as an intermediate language
+
+- Easier
+
+
+
 ## Headers
 
 We've seen that types that belong to constrained type variables need a header tag to carry some type information. But it's actually helpful to add a header to *every* Elm value.
