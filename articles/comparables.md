@@ -85,19 +85,19 @@ function _Utils_cmp(x, y, ord) // x and y will always have the same Elm type in 
          */
 	}
 
-    //  ... recursively compare lists ...
+    //  ... recursively compare lists (the only remaining comparable type)
 }
 ```
 
-Elm's `Int`, `Float` and `String` values correspond directly to JavaScript primitives and can be identified using JavaScript's `typeof` operator. This is not something we'll have available in WebAssembly, so we'll have to find another way.
+Elm's `Int`, `Float` and `String` values correspond directly to JavaScript primitives and can be identified using JavaScript's `typeof` operator. This is not something we'll have available in WebAssembly, so we'll have to find another way to get the same kind of information.
 
 The other Elm types are all represented as different object types. `Char` values are represented as [String objects][string-objects] and can be identified using the `instanceof` operator. Again, `instanceof` is not available in WebAssembly, and we need something else.
 
-In the next part of the function we get a clue that when Elm values are represented as JS objects, they normally have a `$` property. This is set to different values for different types. It's `#2` or `#3` for Tuples, `[]` or `::` for Lists, and can take on various other values for custom types and records.
+In the next part of the function we get a clue that when Elm values are represented as JS objects, they normally have a `$` property. This is set to different values for different types. It's `#2` or `#3` for Tuples, `[]` or `::` for Lists, and can take on various other values for custom types and records. In `--optimize` mode it becomes a number.
 
-Aha! This `$` thing gives us a clue how we can do this. It's just an extra piece of data that's bundled along with the value itself. In a byte-level implementation, we can make it a header that goes in front of the bytes for the value itself.
+Now this is something we _can_ do in WebAssembly. The `$` property is just an extra piece of data that's bundled along with the value itself. We can add a "header" of extra bytes in front of the runtime representation of every value to carry the type information we need.
 
-Let's see what that system looks like.
+The table below shows an outline of what this could look like.
 
 [string-objects]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String#Distinction_between_string_primitives_and_String_objects
 
@@ -116,7 +116,7 @@ For example, to add two Elm `number`values, the algorithm would be:
 - else
   - Do integer addition
 
-This is great because in WebAssembly, integer and floating-point addition are different [instructions](https://webassembly.github.io/spec/core/syntax/instructions.html#numeric-instructions). We're not allowed to be ambiguous about it like in JavaScript.
+We need this information because in WebAssembly, integer and floating-point addition are different [instructions](https://webassembly.github.io/spec/core/syntax/instructions.html#numeric-instructions). We're not allowed to be ambiguous about it like in JavaScript.
 
 Functions operating on `appendable` values can use similar techniques to distinguish String (7) from List (0 or 1) and execute different code branches for each.
 
@@ -126,52 +126,6 @@ Functions operating on `appendable` values can use similar techniques to disting
 
 To have efficient immutable data structures, it's important that we do as much structural sharing as possible. The above implementations of List and Tuple allow for that by using pointers. For example when we copy a List, we'll just do a "shallow" copy, without recursively following pointers. The pointer is copied literally, so we get a second pointer to the same value.
 
-
-
-## String Encoding
-
-WebAssembly has no string primitives, so they have to be implemented at the byte level. That makes sense because different source languages targeting WebAssembly may have different string representations, and WebAssembly needs to support that.
-
-Above I showed the String body containing a sequence of bytes. There are various "encodings" of characters to bytes, and the modern *de facto* standard is UTF-8. Most recently-developed languages use it as their default encoding (Go, Rust, etc.).
-
-**But**... in the browser, there is a cost to using UTF-8. The Web APIs implement *all* strings as UTF-16. This includes some non-obvious things. For example, when you ask the browser to create a "div" in the DOM using `document.createElement('div')`, that `'div'` is a [DOMString](https://heycam.github.io/webidl/#idl-DOMString), which is UTF-16. Similarly, when Elm's `Http` module passes a URL to `XmlHttpRequest `, that URL must be a UTF-16 string. The list goes on.
-
-In theory browser vendors *could* switch to supporting two encodings instead of one for [all 134 Web APIs](https://developer.mozilla.org/en-US/docs/Web/API), just to support WebAssembly. But I don't think that seems likely. It would make a lot more sense to simply provide access to the existing APIs from WebAssembly. Based on [Mozilla's blog articles on WebAssembly][mozilla-blog], the general approach seems to be to make WebAssembly look the same to the browser internals as JIT-compiled JavaScript, and I assume that would include encodings.
-
-[mozilla-blog]: https://hacks.mozilla.org/category/webassembly/
-
-I haven't found anything to 100% confirm this, but if I'm right, and Elm WebAssembly uses UTF-8 internally, the runtime will have to convert between UTF-8 and UTF-16 for every effect. It's not a complex conversion, but there's some performance cost.
-
-Based on this, it's worth actually asking the question whether UTF-8 is the right choice in the browser. As far as I can tell, the main arguments for UTF-8 over UTF-16 are as follows:
-
-1. UTF-8 is more compact since the representation of every character is either smaller or the same size. (Smaller strings may also be faster to iterate over, bringing some performance benefit.)
-2. UTF-16 implementations have historically tended to be buggy
-   - For example Elm currently inherits some problems from JavaScript's UTF-16 implementation. The example below shows that `String.length` counts 16-bit [code units][unicode-code-unit] but `String.foldl` iterates over [characters][unicode-char], which can be either one or two code units.
-
-[unicode-code-unit]: http://unicode.org/glossary/#code_unit
-[unicode-char]: http://unicode.org/glossary/#character
-
-```elm
----- Elm 0.19.0 ----------------------------------------------------------------
-Read <https://elm-lang.org/0.19.0/repl> to learn more: exit, help, imports, etc.
---------------------------------------------------------------------------------
-> s = "🙈🙉🙊"
-"🙈🙉🙊" : String
-> String.length s
-6 : Int
-> String.foldl (\_ nchars -> nchars + 1) 0 s
-3 : number
-```
-
-However, there's nothing that actually *prevents* a correct implementation of UTF-16. If we're starting from scratch on a new platform, we can just write a correct UTF-16 `String` library for Elm, and make things easier when communicating to the outside world via Web APIs.
-
-Correcting bugs/inconsistencies in the `String` package would break backward compatibility with previous versions of Elm. The JavaScript kernel code would need to match the WebAssembly kernel code, assuming both options exist in a future compiler. That would make `String.length` slower - O(N) instead of O(1). But breaking backward compatibility in favour of correctness might be the right choice.
-
-Maybe the conversion cost will be low enough that Elm can use UTF-8 internally without any real issues in practice. But at least, UTF-8 doesn't seem as obvious a choice in a browser context as it would be in another context. It seems like it needs some kind of benchmarking.
-
-Now here's a [huge list of reasons](http://utf8everywhere.org/) why UTF-8 is the best thing in the world, which I'm adding here because people sometimes get a bit hot and bothered about character encodings. But in this case... browsers, y'know?
-
-¯\\\_(ツ)\_/¯
 
 
 
@@ -201,7 +155,7 @@ In the proposed scheme above, all of the primitive values are "boxed". But lots 
 
 The idea is that since a pointer is usually the same size as an integer, it is not really necessary to put an integer in a "box" with a type header. It can be included directly in the relevant data structure.
 
-<img src="./boxed-unboxed.svg" />
+<img src="C:/Users/brian/Code/wasm/blog/articles/boxed-unboxed.svg" />
 
 It's memory-efficient, and for any complex calculations with integers, it saves a lot of unboxing and re-boxing. But it also makes the runtime implementation a bit more difficult! We now have two possible ways of accessing elements inside a data structure. If it's an integer, the value is right there. But if it's anything else, we need to follow a pointer to find the value. And somehow we need to be able to tell which is which.
 
@@ -226,3 +180,96 @@ However with *boxed* integers it makes no difference. 64 and 32 bit values have 
 
 Anecdotally, I think usage of 64-bit integers in web development is pretty rare, except perhaps in some security related areas. For my prototyping I'm going with 32 for backward compatibility.
 
+
+
+
+
+## String Encoding
+
+WebAssembly has no string primitives, so they have to be implemented at the byte level. That makes sense because different source languages targeting WebAssembly may have different string representations, and WebAssembly needs to support that.
+
+Above I showed the String body containing a sequence of bytes. There are various "encodings" of characters to bytes, and the modern *de facto* standard is UTF-8. Most recently-developed languages use it as their default encoding (Go, Rust, etc.).
+
+
+
+### String representations in other languages
+
+#### Python
+The Python 3 Standard library has a Unicode type whose API is Unicode code points. But as per [PEP 393][pep-393], the underlying representation is a C structure that uses different storage formats depending on the maximum character value at creation time. It also holds metadata including length, a hash (for use in dictionary keys etc.), and the representation used.
+[pep-393]: https://www.python.org/dev/peps/pep-0393/
+
+
+#### Rust
+Rust's [String][rust-string] consists of "a pointer to some bytes, a length, and a capacity. The pointer points to an internal buffer String uses to store its data. The length is the number of bytes currently stored in the buffer, and the capacity is the size of the buffer in bytes." The internal representation is UTF-8. There are APIs to convert between bytes and strings.
+[rust-string]: https://doc.rust-lang.org/std/string/struct.String.html#representation
+
+
+#### Java
+Similarly, Java's [JEP 254][jep-254] describes multiple string representations depending on the maximum character value. However all the built-in representations use units of either 8 or 16 bits. There is no built-in Unicode support but there are libraries to support it. A detailed density analysis of different string types for Java can be found [here][java-string-density].
+[jep-254]: http://openjdk.java.net/jeps/254
+[java-string-density]: http://cr.openjdk.java.net/~shade/density/state-of-string-density-v1.txt
+
+
+#### JavaScript
+[This article][js-string-encoding] gives a detailed description of JavaScript's string representation. The summary is that the ECMAScript standard allows for engines to use either UTF-16 or UCS-2, which are similar but slightly different. Most engines use UTF-16.
+[js-string-encoding]: https://mathiasbynens.be/notes/javascript-encoding
+
+
+#### OCaml
+OCaml's [String][ocaml-string] library is based on a sequence of one-byte characters. Unicode support doesn't seem to be strong.
+[ocaml-string]: https://caml.inria.fr/pub/docs/manual-ocaml/libref/String.html
+
+#### Summary
+
+Most languages seem to grapple with a tradeoff between Unicode compliance, convenience, and memory density. It seems to be the best practice to present the application programmer with an API that treats strings as sequences of Unicode characters, while trying to have an underlying representation that is as dense as possible.
+
+Most guides on this are targeted at application developers rather than language implementers. Best practice guides such as [The Unicode Book][unicode-book] and one from the [Flask][flask] web framework, advocate that programs should deal exclusively with Unicode characters internally, and only do encoding and decoding when dealing with external systems you can't control. In Elm this means the `String` package should provide functions to iterate over Unicode `Char`s and only Effect Managers should deal with encodings.
+
+The internal memory representation should be something that facilitates this.
+
+[flask]: http://flask.pocoo.org/docs/1.0/unicode/
+[unicode-book]: https://unicodebook.readthedocs.io/good_practices.html
+
+
+
+### Strings with Web APIs
+
+Most of the browser's Web APIs use JavaScript Strings in UTF-16 format. For example `document.getElementById` expects its argument to be a  [DOMString][DOMString], which is UTF-16. `XmlHttpRequest` can deal with UTF-8 request and response bodies, but what about the string that specifies the URL? That's usually done with JavaScript strings. When the WebAssembly API comes out, will that require UTF-16 too? I can only suppose that the browser's underlying C++ implementation expects UTF-16, so wouldn't it present this to WebAssembly?
+
+[DOMString]: https://developer.mozilla.org/en-US/docs/Web/API/DOMString
+
+There's limited information at this stage on how the Web APIs will work with WebAssembly. There's an [overview of the proposal][host-bindings] but it seems to leave a lot up to browser vendors. It focuses on very low-level details and doesn't say anything about specific APIs like DOM or HTTP.
+
+[host-bindings]: https://github.com/WebAssembly/host-bindings/blob/master/proposals/host-bindings/Overview.md
+
+The general idea is that each Web API will be represented as a "table" of numbered functions. To send a string from Wasm to a browser API, the Wasm program writes it to its own block of memory and passes the address and length to one of the API functions. The Wasm memory block is visible to JavaScript as an ArrayBuffer and also visible to browser APIs, so it can be read from there.
+
+When the browser sends a string to Wasm, calls an "exported" function in the Wasm program to tell it how much memory to allocate for that string. The Wasm program returns a memory address for the external code to write to, and gets a callback when it is done.
+
+The proposal does actually mention UTF-8 encoded strings as one of the possible interface types. It also mentions ArrayBuffer and JSON. The JSON data is "parsed as if it were passed to `JSON.parse()`", which sort of implies UTF-16, I think. It remains to be seen how many Web APIs will actually provide the UTF-8 String argument type.
+
+
+
+## Summary
+
+I've outlined some possible byte-level representations for the most basic Elm data types. We haven't discussed Custom types or Records yet. That's for the next post!
+
+We discussed some of the challenges presented by Elm's "constrained type variables" `comparable`,  `appendable`, and `number` needing some type information at runtime. We came up with a way of dealing with this using "boxed" values with headers. We looked at how some languages use unboxed representations for integers in particular, and briefly touched on how this could be done for Elm at the cost of some complexity.
+
+We dipped our toes into the huge topic of string representation, with some particular considerations for the browser environment in general and WebAssembly in particular.
+
+
+
+## Next up
+
+I've been working away on this project for over 6 months at this stage and my blog posts are lagging way behind! Coming soon-ish:
+
+- Records and Custom types (post nearly finished!)
+- Garbage collection (Wasm built-in GC, custom collectors, immutable data and pure functions)
+- Elm runtime (Process, Scheduler, and Platform kernel libraries)
+- Code generation and intermediate languages (Rust, C, or direct-to-WebAssembly)
+
+If you like you can check out some of my GitHub repos around this topic
+
+- A [fork of the Elm compiler](https://github.com/brian-carroll/elm-compiler) that generates Wasm (from my Elm AST test data, not from real apps!)
+- Some of the [Elm kernel libraries in C](https://github.com/brian-carroll/elm_c_wasm), compiled to Wasm.
