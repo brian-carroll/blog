@@ -30,7 +30,7 @@ tags: #elm, #webassembly
 
 We've seen that types that belong to constrained type variables need a header tag to carry some type information. But it's actually helpful to add a header to *every* Elm value.
 
-Having type tags on all values is useful for implementing the equality function `==`. Since Elm's definition of equality is recursive, the equality function needs to know how to access the children of each value. But different container types have different memory layouts, so we need to be able to distinguish them. (This kind of recursive traversal is also useful for Garbage Collection algorithms).
+Having type tags on all values is useful for implementing the equality function `==`. Since Elm's definition of equality is recursive, the equality function needs to know how to access the children of each value. But different container types have different memory layouts, so to access the children of a value, we need to know something about its type.
 
 All Elm types can be covered with only 11 tags, which only requires 4 bits.
 
@@ -52,18 +52,16 @@ typedef enum {
 
 It's also helpful to add a `size` parameter to the header, indicating the size in memory of the value in a way that is independent of its type. This is useful for memory operations like cloning and garbage collection, as well as for testing equality of strings, custom type values, and records.
 
-Finally if we want to implement a Garbage Collector we can also add some supplementary information in the header to mark whether values are "live" or not, or implement a [tri-color marking][tri-color] scheme. I'm not going to get into GC much, I just want to make sure my design is at least *compatible* with building a custom GC for Elm, even if that won't be necessary for [WebAssembly in the future][post-mvp-wasm], once it gets access to the browser's GC.
+Finally if we want to implement a Garbage Collector we can also add some supplementary information in the header to mark whether values are "live" or not. Some schemes even use headers to store temporary pointers when moving values around in memory. I'm not going to get into GC much, I just want to make sure my design is at least *compatible* with building a custom GC for Elm, even if that won't be necessary for [WebAssembly in the future][post-mvp-wasm], once it gets access to the browser's GC.
 
 In my [prototype][src-types-h] I've chosen the following bit assignments for the header. They add up to 32 bits in total, which is convenient for memory layout.
 
-|          | Bits | Description                                                  |
-| -------- | ---- | ------------------------------------------------------------ |
-| Tag      | 4    | Elm value type. See enum definition above                    |
-| Size     | 26   | Payload size in units of 32-bit ints. Max value 2<sup>26</sup>-1 => 256MB |
-| GC flags | 2    | Enough bits for tri-color marking                            |
+|      | Bits | Description                                                  |
+| ---- | ---- | ------------------------------------------------------------ |
+| Tag  | 4    | Elm value type. See enum definition above                    |
+| Size | 28   | Payload size in units of platform words. Max value 2<sup>28</sup>-1 => 1GB |
 
 [post-mvp-wasm]: https://hacks.mozilla.org/2018/10/webassemblys-post-mvp-future/
-[tri-color]: https://en.wikipedia.org/wiki/Tracing_garbage_collection#Tri-color_marking
 [src-types-h]: https://github.com/brian-carroll/elm_c_wasm/blob/master/src/kernel/types.h
 
 
@@ -106,21 +104,21 @@ Let's see how we can represent records, using the following value as an example
 ```elm
 type alias ExampleRecordType =
     { field123 : Int
-    , field456 : Float
+    , field456 : Char
     }
 
 example : ExampleRecordType
 example =
     { field123 = 42
-    , field456 = 3.14159
+    , field456 = 'x'
     }
 ```
 
-This can be represented by the collection of low-level structures below. For illustration, we assume the compiler has converted the field name `field123` to the integer 123, and `field456` to 456. In this diagram, the headers are denoted as `(Elm type, payload size in integers)`. Floats are 64 bits. Integers and pointers are 32.
+This can be represented by the collection of low-level structures below. For illustration, we assume the compiler has converted the field name `field123` to the integer 123, and `field456` to 456. Integers and pointers are 32 bits and so take up 1 size unit, Floats are 64 bits and take up 2 size units.
 
 <img height="400px" src ="./records-fieldset-numbers-headers.svg" />
 
-The `FieldSet` data structure is an array of integers with a size. It is a static piece of metadata about the record type `ExampleRecordType`. The Elm compiler would generate one instance for each record type, and populate it with the relevant integer field IDs. All records of the same type point to a single shared `FieldSet`. The `FieldSet` does not need a `header` field since it is never cloned or garbage-collected. It can only be accessed through a `Record` so we don't need to give it a type tag either.
+The `FieldSet` data structure is an array of integers with a size. It is a static piece of metadata about the record type `ExampleRecordType`. The Elm compiler would generate one instance for each record type, and populate it with the relevant integer field IDs. All records of the same type point to a single shared `FieldSet`. The `FieldSet` does not need a `header` field since it can never be confused with any other type. It only be accessed through a `Record` and is not garbage-collected since it's static data.
 
 The `Record` itself is a collection of pointers, referencing its `FieldSet` and its parameter values. The value pointers are arranged in the same order as the field IDs in the `FieldSet`, so that accessor functions and update expressions can easily find the value corresponding to a particular field ID.
 
@@ -140,7 +138,7 @@ In Elm, accessor functions only operate on a specific field name. The simplest w
 A snippet from the C implementation is shown below. `fieldset_search` implements a binary search and returns the position of a given field ID in a `FieldSet`. If you're interested in more details, check out the [full source][src-utils], and perhaps read my previous post on [Elm functions in Wasm][first-class-functions].
 
 ```c
-u32 index = fieldset_search(record->fieldset, field->value);
+int index = fieldset_search(record->fieldset, field->value);
 return record->values[index];
 ```
 
@@ -178,17 +176,15 @@ function _Utils_update(oldRecord, updatedFields) {
 We can do something similar in C as follows:
 
 ```c
-Record* Utils_update(Record* r, u32 n_updates, u32 fields[], void* values[]) {
+Record* Utils_update(Record* r, int n_updates, int fields[], void* values[]) {
     Record* r_new = clone(r);
-    for (u32 i=0; i<n_updates; ++i) {
-        u32 field_pos = fieldset_search(r_new->fieldset, fields[i]);
+    for (int i=0; i<n_updates; ++i) {
+        int field_pos = fieldset_search(r_new->fieldset, fields[i]);
         r_new->values[field_pos] = values[i];
     }
     return r_new;
 }
 ```
-
-I've chosen to use 3 separate parameters for the update information, which is not as neat as the single object in the JavaScript version. But in C syntax, constructing a record at the call-site is not as convenient as it is in JS, and seems a waste when we're just going to deconstruct immediately anyway.
 
 I've left out the details of `clone` and `fieldset_search` but they pretty much do what you'd expect. Feel free to take a look at the [full source code][src-utils], which includes [tests][src-utils-test] that mimic generated code from the compiler.
 
@@ -226,9 +222,9 @@ Let's take a simple example where one constructor takes no parameters and the ot
 ```elm
 type MyCustomType
   = Ctor0
-  | Ctor1 Int Float
+  | Ctor1 Int Char
 
-myCtor1 = Ctor1 42 3.14159
+myCtor1 = Ctor1 42 'x'
 ```
 
 The data structures for this example are illustrated below.
@@ -259,9 +255,11 @@ type Bool
 
 An alternative way to implement `Bool` would be to use the unboxed integers 1 and 0. But we'd still need a way to create a `List Bool`, and if `Bool` were unboxed, the list would contain integers instead of pointers.This means that unboxing `Bool` requires the same machinery as unboxing `Int`. (In fact, that's how [OCaml][ocaml-values] implements Booleans.) As mentioned previously, I don't intend to implement unboxed integers for now.
 
+
+
 ## Unit
 
-The Unit type, written as `()`, is just a "custom" type with a single constructor. It's equivalent to the definition below, except that it has its own special symbol `()`.
+The Unit type is just a "custom" type with a single constructor. It has its own special symbol `()` in Elm source code but it's otherwise equivalent to the definition below.
 
 ```elm
 type Unit = Unit
