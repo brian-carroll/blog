@@ -155,7 +155,7 @@ In the proposed scheme above, all of the primitive values are "boxed". But lots 
 
 The idea is that since a pointer is usually the same size as an integer, it is not really necessary to put an integer in a "box" with a type header. It can be included directly in the relevant data structure.
 
-<img src="C:/Users/brian/Code/wasm/blog/articles/boxed-unboxed.svg" />
+<img src="../drafts/boxed-unboxed.svg" />
 
 It's memory-efficient, and for any complex calculations with integers, it saves a lot of unboxing and re-boxing. But it also makes the runtime implementation a bit more difficult! We now have two possible ways of accessing elements inside a data structure. If it's an integer, the value is right there. But if it's anything else, we need to follow a pointer to find the value. And somehow we need to be able to tell which is which.
 

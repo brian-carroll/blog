@@ -1,11 +1,48 @@
 # Unboxed Values for Elm in WebAssembly
 
-I've been intermittently working on a hobby project to compile Elm to WebAssembly. I didn't do much
+Over the last two years or so, I've been intermittently working on a hobby project to compile Elm to WebAssembly. My [last update](https://discourse.elm-lang.org/t/webassembly-compiler-update/5866) was in June 2020 showed a [working demo of TodoMVC](https://brian-carroll.github.io/elm_c_wasm/todo-mvc/). After that I was busy with other things in life for a while. But in the last few weeks I've been working on the project again, and thought it was time for another update.
+
+## Getting more type information for code generation
+
+Like most compilers, the Elm compiler is split into several stages, the last of which is the code generator. That's the part that transforms the internal representation of the program into a string of text to write to an output file.
+
+The current compiler only outputs JavaScript, which doesn't need a lot of type information, so it and it wants to minimise the sizes of cached files in `elm-stuff/`, since file I/O is often the bottleneck for compilation speed on large projects.
+
+![](C:\Users\brian\Code\wasm\blog\published\images\compiler-stages.png)
+
+We can actually get surprisingly far outputting C without type information - I got TodoMVC working without it!
+
+But there are 3 key reasons we want more type info:
+
+- **Round-valued floats bug** Currently when we pass numbers from JS to Wasm, we have no reliable way to know whether they are `Int` or `Float`. For a round-valued `Float` like `3.0`, my JS-to-Wasm encoder will mistake it for an `Int` and pass the wrong bytes to the Wasm module, resulting in data corruption without any error thrown. This is a known bug and we need type info to fix it.
+- **JS wrapper performance** The JavaScript wrapper around the Wasm module is quite slow at encoding values to bytes, because it is handwritten JS code that detects types at runtime, rather than generated code based on compile-time type information.
+- **Generated code performance** Currently we can't implement very common performance optimisations that languages do, like "unboxed integers". Browsers will do it on hot code paths in JS so there's not much point in generating Wasm that doesn't.
+
+Having looked into all of these issues, I think that if we can solve unboxed integers, it will also solve the "round-valued floats" bug, and make the byte encoders much easier too. So that's the first step, and the focus for the rest of this post.
+
+## Unboxed integers
+
+Container types like Tuples, Lists, Records and Custom types, normally have pointers to their "child" values. But a pointer is just an integer that represents a memory address! So if that "child" value is actually just an integer, then this indirection is a bit of a waste. We could "just" store the integer itself rather than the address, and save a lot of work from hopping around memory looking for things.
+
+![](C:\Users\brian\Code\wasm\blog\published\images\unboxed.png)
+
+This trick only really works because `Int` is the same size as a pointer. It also works for smaller types like `Bool` and `Char`. But in a tuple like `(String, List Float)`, it won't work. Strings and Lists are too big to fit. We just put pointers in the Tuple instead, which also means we can share the same String and List with other data structures, without making new copies. We just copy the pointer, not the whole structure.
+
+## Header flags
+
+So now things are more complicated because we have a two-tier system - some "child" values are pointers and some are just numbers.
+
+This creates a problem for the [Garbage Collector](https://github.com/brian-carroll/elm_c_wasm/blob/master/docs/gc.md). If it can't tell which numbers are pointers and which are just numbers, then it can't figure out which values are alive and which are garbage. So we need to add some extra information to the header.
+
+In the case of the 2-tuple, we need two bits to indicate whether each child is boxed (a pointer) or unboxed (an integer). For Records and Custom types we may need more bits. 32 bits should be enough for most practical usage. Beyond that, things get more complicated. For example in Haskell, for large structures, this information is actually stored in a [separate data structure](https://gitlab.haskell.org/ghc/ghc/-/wikis/commentary/rts/storage/heap-objects#bitmap-layout).
+
+## Type info for header flags
+
+So how do we get enough info to generate these flags?
 
 I have been looking into unboxed ints. I wanted to give you an update on it and also ask for some advice!
 
 There are two key pieces to it. The first is going well. The second is hard and I'm a bit stuck!
-
 
 1) Unboxed flags for containers
 
