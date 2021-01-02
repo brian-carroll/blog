@@ -81,7 +81,7 @@ I created a new function `Elm.onReady` to help with this. You just put your app'
 For my WebAssembly version of the TodoMVC example, it looks like this:
 
 ```html
-&lt;script type="text/javascript"&gt;
+<script type="text/javascript">
   Elm.onReady(function () {
     var storedState = localStorage.getItem('elm-todo-save');
     var startingState = storedState ? JSON.parse(storedState) : null;
@@ -90,7 +90,7 @@ For my WebAssembly version of the TodoMVC example, it looks like this:
       localStorage.setItem('elm-todo-save', JSON.stringify(state));
     });
   });
-&lt;/script&gt;
+</script>
 ```
 
 ### Summary
