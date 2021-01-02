@@ -38,7 +38,7 @@ I ran into a few challenges with type information. The compiler has several diff
 
 - Currently it's unsafe to use a Float parameter in an app-level `Msg` type. I have no way to tell Int from Float when passing messages from the JS runtime to the Wasm app.
 
-- The `Time` module doesn't work because it uses Int for timestamps. Realistic values require at least 42 bits but I'm using 32 bits. Some low level details work out nicely that way, because Wasm pointers are 32 bits. And the `Json` and `Bitwise` libraries rrequire 32-bit integers as well.
+- The `Time` module doesn't work because it uses Int for timestamps. Realistic values require at least 42 bits but I'm using 32 bits. Some low level details work out nicely that way, because Wasm pointers are 32 bits. And the `Json` and `Bitwise` libraries require 32-bit integers as well.
 
 - I need to be able to distinguish custom types from tuples and lists. I'm using runtime type detection, but I'd prefer not to.
 
