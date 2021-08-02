@@ -1,6 +1,6 @@
 ---
 title: Elm in Wasm: Built-in typeclasses
-published: false
+published: true
 description: 
 tags: #elm, #webassembly
 ---
@@ -130,15 +130,12 @@ typedef struct {
 } Header;
 ```
 
-
-&nbsp;
-
-
 ## Comparable values in WebAssembly
 
-![](C:\Users\brian\Code\wasm\blog\drafts\value-representations.png)
+![value-representations](./images/value-representations.png)
+ 
 
-Using these representations, we can distinguish between any of the values that are members of `comparable`,  `appendable`, or`number`.
+Using these representations, we can distinguish between any of the values that are members of `comparable`, `appendable`, or `number`.
 
 For example, to add two Elm `number`values, the algorithm would be:
 
