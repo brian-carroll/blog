@@ -57,7 +57,7 @@ This creates a problem for the [Garbage Collector](https://github.com/brian-carr
 There are two main ways to do this
 
 ### Least significant bit flag
-If we don't mind reducing the size of an `Int` to 31 bits instead of 32, we can use the lowest bit as the "unboxed" flag. This is [what OCaml does](https://dev.realworldocaml.org/runtime-memory-layout.html) for all integers, and [what v8 does](https://github.com/thlorenz/v8-perf/blob/master/data-types.md#efficiently-representing-values-and-tagging) for "small integers".
+If we don't mind reducing the size of an `Int` to 31 bits instead of 32, we can use the lowest bit as the "unboxed" flag. This is [what OCaml does](https://dev.realworldocaml.org/runtime-memory-layout.html) for all integers, and [what v8 does](https://github.com/thlorenz/v8-perf/blob/master/data-types.md#efficiently-representing-values-and-tagging) for JavaScript numbers that it decides are "small integers".
 
 This technique takes advantage of the fact that pointers are always going to be even-numbered addresses anyway. It's standard practice to align everything in memory to 32-bit or 64-bit address boundaries, because the hardware works more efficiently that way.
 
@@ -105,7 +105,7 @@ For number calls that have a concrete type, I don't need either runtime SuperTyp
 In the case of comparable...
 int    unboxed
 float  boxed
-char   unboxed (UTF-16 needs the full 32 bits, has to be boxed! Unicode value only needs 21 bits)
+char   boxed for now (UTF-16 needs the full 32 bits! Unicode value is 21 bits, but then Char 'compares' differently than String)
 string boxed
 list   boxed
 tuple  boxed
@@ -143,32 +143,164 @@ In the LSB flag & type tag scheme, what compiler support do we need?
 
 
 
+## JS Wrapper issue
 
-
-### JS Wrapper issue
-
-- Identify JS functions calling Elm functions and vice versa
+- Identify calls to JS functions
+  - We already do this bit
 - Need to
 
   - Get full type info for the call
   - Generate encoder/decoder
-  - Handle Closures
-- All Kernel values have Elm aliases with type annotations
-  - Just 4 exceptions in core, and some in other libs
-    - All things I've implemented in C (split, join, fromArray, log)
-    - If Wasm was official what would we do? Just write the type annotation in the source, of course! Don't have to export it!
+  - Handle Closures (already do this dynamically)
+- Most Kernel values have Elm aliases with type annotations
+  - Just 4 exceptions in core. Others in Http, Bytes, etc.
+    - If Wasm was official what would we do? Just write the type annotation in the source for all of them! Don't have to export it!
     - Could modify `Constrain.Expression.constrain` to have a Bool arg that says `isTopLevel` and skip the `CLet` in that case.
-    - But it's really not worth it.
-    - For now just throw if there's no type annotation, or make a special case in the compiler
+    - Maybe just throw if there's no type annotation, or make a special case in the compiler
+    - Or have a slower dynamic decoder
   - Generate
     - Global
       - We already have a "top level expression" generation function `Generate.C.addDef`
       - In the `VarKernel` case for that, look up the annotation _for the definition_ and generate the encoder/decoder stuff
-      - The encoder is in the name of the VarKernel, not its Elm alias
+      - The encoder is in the name of the `VarKernel`, not its Elm alias
     - Expression
-      - References to the VarKernel just get generated as calls to the Wasm stand-in
+      - References to the `VarKernel` just get generated as calls to the Wasm stand-in
 - Complication: type variables
-  - 
+  - Maybe in this case insert a CLet to find out the specific type? Does that work? Can't remember
+
+
+
+### How would it work in a real example?
+
+```elm
+-- user code
+Http.get
+    { url = "./assets/data.json"
+    , expect = Http.expectJson JsonLoaded JD.string
+    }
+-- package Elm code, where `command` is JS
+request
+  : { method : String
+    , headers : List Header
+    , url : String
+    , body : Body
+    , expect : Expect msg
+    , timeout : Maybe Float
+    , tracker : Maybe String
+    }
+  -> Cmd msg
+request r =
+  command <| Request <|                       -- command is a JS function
+    { method = r.method
+    , headers = r.headers
+    , url = r.url
+    , body = r.body
+    , expect = r.expect
+    , timeout = r.timeout
+    , tracker = r.tracker
+    , allowCookiesFromOtherDomains = False
+    }
+```
+
+So the structure of the type here is
+
+- Custom type constructor `Request` from `Http.MyCmd`
+  - Record with 8 fields, first one is a String, blah
+  - has a `msg` type variable... forget that for now
+- So I want a constructor function for a `Request` on the JS side that takes an address for a Wasm `Request`
+- This JS function already knows what fields I'm going to want in the Record, it **doesn't have to look anything up**
+- Should also know the order of them in the Wasm Record and match everything up (it's alphabetical)
+
+Decoding a `Cmd`
+
+```js
+function _Platform_leaf(home)
+{
+	return function(value)
+	{
+		return {
+			$: __2_LEAF,
+			__home: home,
+			__value: value
+		};
+	};
+}
+
+// Http.command is an alias for Platform.leaf('Http'), which is a partially applied constructor for Cmd where the first arg is 'home'
+// So when we see Platform.leaf in C we could call a C constructor for Cmd, then have a Cmd decoder
+function decodeCmd(addr8) {
+    var index32 = addr8 >> 2;
+    switch (_Utils_mem32[index32+1]) {
+            
+    }
+}
+function decodeCall$elm$http$Http$command() {
+
+}
+
+function decodeAny(addr8) {
+  var index32 = addr8 >> 2;
+  // check type tag
+  // if List, first detect type, then select a decoder, then decode the list with the right decoder
+  // if Custom, check upper bits of ctor to get the whole type, then call the decoder for that
+  // For records... dunno
+  // maybe need to gather type info on Record nodes, and put a type index (decoder index) into the Record struct itself
+}
+
+function decodeCustom$elm$http$Http$MyCmd(addr8) {
+  var index32 = addr8 >> 2;
+  switch (_Utils_mem32[index32+1]) {
+    case 0:
+      return $elm$http$Http$Cancel(
+         decodeString(_Utils_mem32[index32+2])
+      );
+    case 1:
+      return $elm$http$Http$Request(
+        decodeRecord_allowCookiesFromOtherDomains_body_expect_headers_method_timeout_tracker_url(
+           _Utils_mem32[index32+2]
+        )
+      );
+    default:
+      throw new Error('Corrupt WebAssembly memory at 0x' + addr8.toString(16));
+  }
+}
+// hang on, just because we know the field names doesn't mean we know what's in them...
+// so this is the wrong name, probably need to call it decodeRecord4625
+// why not both... add a numeric index on the end as a sort of hash of the field types
+function decodeRecord_allowCookiesFromOtherDomains_body_expect_headers_method_timeout_tracker_url(addr8) {
+  var index32 = addr8 >> 2;
+  return {
+    allowCookiesFromOtherDomains: decodeBool(_Utils_mem32[index32+3]),
+    body: decodeBody(_Utils_mem32[index32+4]),
+    expect: decodeExpect(decodeAny, _Utils_mem32[index32+5]),
+    headers: decodeList(decodeHeader, _Utils_mem32[index32+6]),
+    method: decodeString(_Utils_mem32[index32+7]),
+    timeout: decodeCustom$elm$core$Maybe$Maybe(decodeFloat, _Utils_mem32[index32+8]),
+    tracker: decodeCustom$elm$core$Maybe$Maybe(decodeString, _Utils_mem32[index32+9]),
+    url: decodeString(_Utils_mem32[index32+10]),
+  }
+}
+```
+
+
+
+Some of the calls are to Platform.leaf and will become `Cmd`s or `Sub`s.
+
+The rest are just in JS for "perf" (which we are going to make 10x worse)
+
+Example
+
+```elm
+isSubChar : (Char -> Bool) -> Int -> String -> Int
+isSubChar =
+  Elm.Kernel.Parser.isSubChar
+```
+
+
+
+
+
+
 
 
 
