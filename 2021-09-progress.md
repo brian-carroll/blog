@@ -1,22 +1,28 @@
 # Porting Elm to WebAssembly
 
-For a few years now, on and off, I've been working on a hobby project to build an unofficial port of the Elm language to WebAssembly. It's definitely not production ready but I'm at the stage now where I have some good working demos, and things are taking shape.
+For a few years now, on and off, I've been working on an unofficial port of the Elm language to WebAssembly, as a hobby project. It's definitely not production ready but I'm at the stage now where I have some good working demos, and things are taking shape.
 
+For the past year or so I've been mainly working on robustness, doing a _lot_ of debugging, which also led to some rewriting and architecture changes. I rewrote a large part of the GC, fixed lots of edge cases in the language implementation, and made the Wasm/JavaScript interop a lot more efficient.
 
+After all that I've managed to reach my goal of being able to run Richard Feldman's [Elm SPA Example](https://github.com/rtfeldman/elm-spa-example) in my system! :smiley: Here's a working implementation [compiled to WebAssembly](https://brian-carroll.github.io/elm_c_wasm/elm-spa-example-wasm/). And for comparison, you can also check out the same code [compiled to JavaScript](https://brian-carroll.github.io/elm_c_wasm/elm-spa-example-js/). (Unfortunately the publicly available APIs don't seem to be returning very much data at the moment but there's not much I can do about that!)
 
-## How is the project going?
+## Robustness
 
-For the past year or so I've been mainly working on robustness, doing a _lot_ of debugging, which also led to some architectural changes. I rewrote a large part of the GC, fixed lots of edge cases in the language implementation, and made the JS/Wasm interop a lot more efficient.
+My early attempts to get the SPA example running failed pretty badly. There were just too many compiler and core library bugs to be able to disentangle everything. I realised I needed to be patient and work on robustness. So I started by writing lots of unit tests for the low-level C code. You can [run the tests in the browser](https://brian-carroll.github.io/elm_c_wasm/unit-tests/?argv=-av).
 
-After all that I've managed to reach my goal of being able to run Richard Feldman's [Elm SPA Example](https://github.com/rtfeldman/elm-spa-example) in my system! :smiley: Here's a working implementation [compiled to WebAssembly](https://brian-carroll.github.io/elm_c_wasm/elm-spa-example-wasm/). And for comparison, you can also check out the same code [compiled to JavaScript](https://brian-carroll.github.io/elm_c_wasm/elm-spa-example-js/).
+And there was a specific part of the GC that was always throwing up hard-to-find bugs and was too complicated and hard to understand. It's the system that tracks references from the stack to the heap. I decided to just throw it out and keep trying different approaches until I found something that just felt stable and obvious and robust. I ended up rewriting it 4 times. The end result is something that's much more straightforward and a lot less scary, and I haven't had any bugs there since.
 
-My first attempts on the SPA example failed pretty miserably. There were just too many bugs to make any progress, with no way to disentangle them. And the debugging tools for WebAssembly are pretty poor. Then I had the idea to use the core library's [unit tests](https://github.com/elm/core/tree/master/tests/tests/Test). That turned out really well. The core tests were really great for focusing on specific code generation bugs. (Though only *after* I'd fixed enough code gen bugs to run the actual [Elm Test](https://github.com/elm-explorations/test) framework!). In the process I ported the core tests to run in the browser and you run them by opening [this demo]().
+Once all that handwritten C code was solid, I needed to make sure the C generated from Elm was working properly. I found the [source](https://github.com/elm/core/tree/master/tests/tests/Test) for the core library's unit tests and decided to port them into my project and add some of my own tests. You can [run the Elm core tests](https://brian-carroll.github.io/elm_c_wasm/language-test) in your browser too. (Funnily enough, one of the biggest challenges was getting the [Elm Test](https://github.com/elm-explorations/test) framework itself to run! I still need to come back to the fuzzer tests.)
 
->  TODO: deploy update to live demo & deploy language test
+Then finally, with a bit more debugging, the SPA example came together.
 
-I haven't really focused on performance yet, but already I get similar results between the JS and Wasm versions of the SPA example when I run Chrome dev tools performance tests. (The JS version has `--optimize` and minification).
+## Performance
 
-So overall I think the project is in a pretty good place! But it's not ready for general use. Currently it's only set up to run on the "canned" demo apps in my repo, which all have their own build scripts with minor variations. And there's no solution for package management, so you can't have two apps with different versions of Kernel code. Those are next steps. (Reach out on the [Elm Slack](https://elmlang.herokuapp.com/) if you're interested in helping out!)
+I haven't really focused on performance yet, but already it's similar to the official compiler's JS output with `--optimize` and `uglify-js`, and there's a lot of room for improvement. This is based on a quick analysis using Lighthouse from Chrome devtools.
+
+## Pre-canned demo apps only!
+
+So overall I think the project is in a pretty good place! But it's not ready for general use. Currently it's only set up to run on the "canned" demo apps in my repo, which all have their own build scripts with minor variations. And there's no solution for package management, so you can't have two apps with different versions of Kernel code.
 
 
 
@@ -70,14 +76,13 @@ Going the other direction is harder and we have to find workarounds. Most refere
 
 ## What's next?
 
-Probably the most important practical issues are usability and scalability. I'd like to make the build system general enough and usable enough for people to try out the system on their own apps. And, related to that, I'd like to come up with a more general and scalable way to deal with packages so that all apps don't have to use the same package versions!
+Probably the most important practical issues are usability and scalability. I'd like to make the build system general enough and usable enough for people to try out the system on their own apps. And, related to that, I'd like to come up with a more general and scalable way to deal with packages so that all apps don't have to use the same package versions! Maybe we can get some real apps running.
 
 There's also lots of performance ideas I'd like to try out
 
-- Set up a performance benchmark demo to work on (perhaps [this one](https://krausest.github.io/js-framework-benchmark/2021/table_chrome_93.0.4577.63.html))
-- Port more kernel modules to C/Wasm
-- Finish the VirtualDom implementation in C with data-oriented design and arena allocator
-- Remove Emscripten and do something more custom to reduce code size
-- Optimisations for fully-applied function calls
-- Optimisations for GC stack tracing
+- Set up a benchmark for some more focused performance work (perhaps [this one](https://krausest.github.io/js-framework-benchmark/2021/table_chrome_93.0.4577.63.html))
+- Port more kernel modules to C/Wasm. It looks like this could be one of the key performance drivers but there's a _lot_ of code to port.
+- Finish building a VirtualDom implementation in C using cache-friendly "data-oriented design" techniques and an arena allocator
+- Remove the Emscripten layer and just use clang. Emscripten was handy to get going but it bloats code size a lot.
+- Implement some optimisations that should make function calls faster
 
